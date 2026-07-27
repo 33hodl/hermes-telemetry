@@ -1424,6 +1424,13 @@ function renderSessionDetail(data) {
   html += `<div class="insight-card"><div class="label">Provider</div><div class="value"><span class="inline-btn data-chip provider-chip" title="${escHtml(run.provider || '—')}" onclick='closeSessionDetail(); addDrilldown({provider:${providerFilter}})'>${escHtml(run.provider || '—')}</span></div></div>`;
   html += `<div class="insight-card"><div class="label">Model</div><div class="value" style="font-size:16px"><span class="inline-btn data-chip model-chip" title="${escHtml(run.model || '—')}" onclick='closeSessionDetail(); addDrilldown({model:${modelFilter}})'>${escHtml(run.model || '—')}</span></div></div>`;
   html += `<div class="insight-card"><div class="label">Cost / Duration</div><div class="value">${fmtCost(run.cost_usd)} / ${fmtMs(run.duration_ms)}</div></div>`;
+
+  // Loop badge: surfaces when session is part of a cron or self-perpetuating loop.
+  if (data.loop && data.loop.session_id) {
+    const loopTypeIcon = data.loop.loop_type === 'cron' ? '&#9200;' : '&#128260;';
+    const statusColor = data.loop.status === 'active' ? '#3fb950' : (data.loop.status === 'expired' ? '#8b949e' : '#d29922');
+    html += `<div class="insight-card"><div class="label">Loop</div><div class="value" style=\"font-size:15px\"><span style=\"color:${statusColor};margin-right:4px\">${loopTypeIcon}</span>${escHtml(data.loop.loop_type)}</div></div>`;
+  }
   html += '</div></div>';
 
   html += '<div class="drawer-section"><h4>Run totals</h4>';
@@ -1434,6 +1441,24 @@ function renderSessionDetail(data) {
   html += `<tr><th>Cache read</th><td>${nf(run.cache_read_tokens || 0)}</td><th>Cache write</th><td>${nf(run.cache_write_tokens || 0)}</td></tr>`;
   html += `<tr><th>Started</th><td>${fmtLocalTs(run.started_at, {seconds:true})}</td><th>Ended</th><td>${fmtLocalTs(run.ended_at, {seconds:true})}</td></tr>`;
   html += '</tbody></table></div>';
+
+  // LoopCard: detailed loop facts when this session is part of a loop.
+  if (data.loop && data.loop.session_id) {
+    const l = data.loop;
+    const statusLabel = {active: 'Active', expired: 'Expired', cancelled: 'Cancelled', unknown: 'Unknown'}[l.status] || l.status;
+    const typeLabel = {cron: 'Cron job', self_perpetuating: 'Self-perpetuating'}[l.loop_type] || l.loop_type;
+    const fromLabel = {cron_platform: 'Platform=cron', cronjob_tool: 'Cronjob tool calls'}[l.detected_from] || l.detected_from;
+    html += '<div class="drawer-section"><h4>Loop details</h4>';
+    html += '<table><tbody>';
+    html += `<tr><th>Type</th><td>${escHtml(typeLabel)}</td><th>Status</th><td>${statusBadge(l.status)}</td></tr>`;
+    html += `<tr><th>Detected via</th><td colspan="3">${escHtml(fromLabel)}</td></tr>`;
+    if (l.cron_job_id) {
+      html += `<tr><th>Cron Job ID</th><td colspan="3">${escHtml(l.cron_job_id)}</td></tr>`;
+    }
+    html += `<tr><th>Fire count</th><td>${nf(l.fire_count || 0)}</td><th>Tool calls</th><td>${nf(l.tool_call_count || 0)}</td></tr>`;
+    html += `<tr><th>First seen</th><td>${fmtLocalTs(l.first_seen_at, {seconds:true})}</td><th>Last seen</th><td>${fmtLocalTs(l.last_seen_at, {seconds:true})}</td></tr>`;
+    html += '</tbody></table></div>';
+  }
 
   html += '<div class="drawer-section"><h4>LLM call summary</h4>';
   html += '<table><tbody>';

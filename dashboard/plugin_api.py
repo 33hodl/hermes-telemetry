@@ -20,6 +20,7 @@ stays in the runtime hooks.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 import threading
@@ -343,7 +344,18 @@ def session_detail(session_id: str) -> dict:
         """,
         (session_id,),
     )
-    return {"run": run, "llm_summary": llm_summary, "tool_summary": tool_summary}
+    # Loop detection: try to look up loop_facts for this session.
+    loop = None
+    with contextlib.suppress(Exception):
+        loop = _one(
+            """SELECT session_id, loop_type, detected_from, cron_job_id,
+                      status, first_seen_at, last_seen_at, fire_count,
+                      tool_call_count, detected_at, recomputed_at
+               FROM loop_facts WHERE session_id = ?""",
+            (session_id,),
+        )
+
+    return {"run": run, "llm_summary": llm_summary, "tool_summary": tool_summary, "loop": loop}
 
 
 # ---------------------------------------------------------------------------
