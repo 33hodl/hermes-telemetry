@@ -1784,11 +1784,16 @@ def _compute_model_efficiency_rows(window_hours, limit, include_deleted):
         (*visible_params, limit),
     )
     if rows:
+        # Window-bound only — this subquery never applied visibility filtering.
+        # `_since_clause()` already returns a full predicate (`lc.ts >= '…'` or
+        # `1=1`), so splice it bare. Do not pass `visible_params`: there are no
+        # `?` placeholders here.
         session_models = _rows(
-            """
+            f"""
             SELECT DISTINCT tc.session_id, lc.model, lc.provider
             FROM tool_calls tc
             JOIN llm_calls lc ON lc.session_id = tc.session_id
+            WHERE {since_clause}
             """
         )
         tool_count: dict[tuple, int] = {}
@@ -3861,7 +3866,16 @@ class ModelEfficiencyCache(_BackgroundPayloadCache):
         )
 
     def refresh(self, window_hours=None, include_deleted=False, limit=50, **kwargs):
-        """Force an immediate refresh of one window (or all default windows)."""
+        """Force an immediate refresh of one window (or all default windows).
+
+        No local ``_refreshing`` guard here: ``_refresh_all`` (base class)
+        already sets ``self._refreshing`` for its per-key loop and calls back
+        into this method for every key. Re-checking that flag here would make
+        each legitimate per-key refresh a silent no-op, leaving the background
+        cache permanently empty. The ``refresh(None) -> _refresh_all ->
+        refresh(<window>)`` chain terminates on its own (inner calls always pass
+        a concrete window), so no re-entrancy guard is needed.
+        """
         if window_hours is None:
             return self._refresh_all()
         started = time.monotonic()
