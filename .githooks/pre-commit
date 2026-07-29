@@ -13,6 +13,20 @@
 
 set -euo pipefail
 
+# CI pins ruff via .ruff-version. A different local version silently voids this
+# hook's promise: ruff 0.16.0 formats Python blocks inside Markdown while
+# 0.15.15 skips them, so a clean local run can still fail CI (or the reverse).
+# Warn loudly rather than block — you may have a good reason to run another one.
+if [ -f .ruff-version ]; then
+  pinned="$(tr -d '[:space:]' < .ruff-version)"
+  local_ruff="$(ruff --version | awk '{print $2}')"
+  if [ "$pinned" != "$local_ruff" ]; then
+    echo "⚠ ruff version skew: local $local_ruff, CI pins $pinned" >&2
+    echo "  A green run here does NOT guarantee a green CI." >&2
+    echo "  Match it with: pip install 'ruff==$pinned'" >&2
+  fi
+fi
+
 echo "▶ ruff format --check ."
 ruff format --check .
 

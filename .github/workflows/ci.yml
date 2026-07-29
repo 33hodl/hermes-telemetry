@@ -53,8 +53,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff
-        run: pip install ruff
+      # Pinned deliberately. An unpinned `pip install ruff` makes this job
+      # depend on whatever was released last: ruff 0.16.0 graduated Markdown
+      # formatting out of preview and began formatting the Python blocks inside
+      # README.md / ONBOARDING.md, turning main red with no repo change at all.
+      # Bump .ruff-version in its own PR, together with any reformatting it
+      # implies, so the change is a decision instead of an accident.
+      - name: Install ruff (pinned via .ruff-version)
+        run: pip install "ruff==$(tr -d '[:space:]' < .ruff-version)"
 
       - name: Check formatting
         run: ruff format --check .

@@ -22,3 +22,8 @@ htmlcov/
 # Superpowers SDD working artifacts (design specs + implementation plans) are
 # local scratch, not committed to the repo.
 docs/superpowers/
+
+# Agent tooling scratch dirs. Untracked AND unignored means `ruff format .`
+# walks them (1600+ files), so local output stops matching CI's 67.
+.claude/
+.playwright-mcp/
