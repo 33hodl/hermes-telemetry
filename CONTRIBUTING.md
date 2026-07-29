@@ -109,6 +109,18 @@ Key conventions:
 - **Type hints:** encouraged but not required (mypy is optional)
 - **Docstrings:** Google style for public functions
 
+**Use the pinned ruff.** CI installs the exact version in `.ruff-version`, and
+the two disagree in ways that matter — 0.16.0 formats the Python blocks inside
+Markdown files, 0.15.15 skips them. A different local version means a clean run
+here can still fail CI:
+
+```bash
+pip install "ruff==$(tr -d '[:space:]' < .ruff-version)"
+```
+
+The pre-commit hook warns when your local ruff drifts from the pin. Bump
+`.ruff-version` in its own PR, along with whatever reformatting it causes.
+
 Auto-fix lint issues:
 
 ```bash
