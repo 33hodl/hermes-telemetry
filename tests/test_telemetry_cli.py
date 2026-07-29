@@ -1,5 +1,7 @@
 # tests/test_telemetry_cli.py
 import json as _json
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -327,3 +329,33 @@ def test_main_no_subcommand_exits():
     with pytest.raises(SystemExit) as exc_info:
         main([])
     assert exc_info.value.code == 0
+
+
+@pytest.mark.parametrize("tracked_path", ["hermes-telemetry", ".githooks/pre-commit"])
+def test_entry_points_are_tracked_executable(tracked_path):
+    """Files git must hand over runnable need mode 100755 in the index.
+
+    Tracked as 100644, every fresh checkout lands a non-executable file:
+    `hermes-telemetry` then dies with "Permission denied" (only the integrated
+    `hermes telemetry` path keeps working), and `.githooks/pre-commit` is
+    silently ignored by git, so format/lint/test breakage reaches CI unchecked.
+    The working-tree permission is not enough to assert — a local chmod hides a
+    wrong index mode, so read the index itself.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    if not (repo_root / ".git").exists():
+        pytest.skip("not a git checkout")
+
+    result = subprocess.run(
+        ["git", "ls-files", "-s", "--", tracked_path],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip(), f"{tracked_path} is not tracked by git"
+    mode = result.stdout.split()[0]
+    assert mode == "100755", (
+        f"{tracked_path} is tracked as {mode}; fix with "
+        f"`git update-index --chmod=+x {tracked_path}`"
+    )
