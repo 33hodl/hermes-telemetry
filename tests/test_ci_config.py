@@ -36,6 +36,22 @@ def test_ci_installs_ruff_from_the_pin_file():
     assert ".ruff-version" in ci, "CI must read the pin from .ruff-version"
 
 
+def test_ruff_format_excludes_markdown():
+    """Docs must not be at the mercy of the formatter's Markdown support.
+
+    The Python blocks in README.md / ONBOARDING.md are hand-aligned reference
+    tables; ruff 0.16.0 collapses that alignment and fails the check. Excluding
+    them keeps `ruff format --check .` deterministic across ruff versions — and
+    unlike the version pin, this takes effect for pull requests too, since
+    `pull_request_target` reads the workflow from the base branch but the config
+    from the PR checkout.
+    """
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    assert re.search(r"^extend-exclude\s*=\s*\[[^\]]*\"\*\.md\"", pyproject, re.M), (
+        "pyproject must exclude *.md from ruff so docs formatting stays a deliberate choice"
+    )
+
+
 def test_pre_commit_hook_checks_the_pinned_ruff():
     """The hook's whole value is matching CI, so it must notice a version skew."""
     hook = PRE_COMMIT_HOOK.read_text()

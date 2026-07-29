@@ -49,6 +49,15 @@ hermes_telemetry = ["*.yaml", "*.html"]
 target-version = "py38"
 line-length = 100
 
+# Markdown is documentation, not source. ruff 0.16.0 graduated Markdown
+# formatting out of preview and began rewriting the Python blocks embedded in
+# README.md / ONBOARDING.md, which turned CI red with no repo change at all.
+# Those blocks are hand-aligned reference tables (hook kwargs, row shapes) where
+# the column alignment IS the readability, and the formatter collapses it.
+# Excluding *.md keeps `ruff format --check .` deterministic across ruff
+# versions; adopting Markdown formatting later is a deliberate, separate call.
+extend-exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = [
     "E",    # pycodestyle errors
