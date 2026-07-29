@@ -855,6 +855,10 @@ def test_loops_endpoint_returns_tiles_and_loop_list(plugin_api):
     tiles = out["tiles"]
     assert tiles["active_loops"] >= 0
     assert tiles["total_runs"] >= 0
+    assert tiles["total_cost_usd"] > 0
+    # Footprint attribution: token totals from loop sessions
+    assert tiles["total_tokens_in"] >= 0
+    assert tiles["total_tokens_out"] >= 0
 
     # Loops list should have at least 2 entries (job-alpha, job-beta)
     loops = out["loops"]
@@ -868,6 +872,9 @@ def test_loops_endpoint_returns_tiles_and_loop_list(plugin_api):
     assert alpha["session_count"] == 2
     assert alpha["fire_count"] == 2
     assert alpha["loop_type"] == "cron"
+    # Footprint attribution: tokens aggregated across both sessions
+    assert alpha["tokens_in"] == 150  # 100 + 50
+    assert alpha["tokens_out"] == 300  # 200 + 100
 
 
 def test_loops_endpoint_self_perpetuating(plugin_api):
@@ -928,4 +935,6 @@ def test_loops_endpoint_empty_when_no_loop_data(plugin_api):
     assert tiles["expired_loops"] == 0
     assert tiles["total_runs"] == 0
     assert tiles["total_cost_usd"] == 0.0
+    assert tiles["total_tokens_in"] == 0
+    assert tiles["total_tokens_out"] == 0
     assert out["loops"] == []

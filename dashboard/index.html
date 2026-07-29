@@ -1197,14 +1197,16 @@ function renderLoops(data) {
   html += renderStatCard('loopsExpired', nf(tiles.expired_loops), 'Expired', 'red');
   html += renderStatCard('loopsRuns', nf(tiles.total_runs), 'Total Runs', 'blue');
   html += renderStatCard('loopsCost', fmtCost(tiles.total_cost_usd), 'Total Cost', 'yellow');
+  html += renderStatCard('loopsTokensIn', nf(tiles.total_tokens_in || 0), 'Tokens In', 'purple');
+  html += renderStatCard('loopsTokensOut', nf(tiles.total_tokens_out || 0), 'Tokens Out', 'orange');
   html += '</div>';
   if (loops.length) {
-    let t = '<table><thead><tr><th>Loop ID</th><th>Type</th><th>Status</th><th>Sessions</th><th>Fires</th><th>Cost</th><th>First Seen</th><th>Last Seen</th></tr></thead><tbody>';
+    let t = '<table><thead><tr><th>Loop ID</th><th>Type</th><th>Status</th><th>Sessions</th><th>Fires</th><th>Cost</th><th>Tokens In</th><th>Tokens Out</th><th>First Seen</th><th>Last Seen</th></tr></thead><tbody>';
     for (const row of loops) {
       const lid = row.loop_id || '?';
       const ltype = row.loop_type === 'self_perpetuating' ? 'self' : 'cron';
       const status = row.status || 'unknown';
-      t += `<tr><td><code title="${escHtml(lid)}">${escHtml(lid.substring(0, 30))}</code></td><td>${escHtml(ltype)}</td><td>${statusBadge(status)}</td><td>${nf(row.session_count)}</td><td>${nf(row.fire_count)}</td><td>${fmtCost(row.total_cost_usd)}</td><td class="text-muted">${fmtLocalTs(row.first_seen)}</td><td class="text-muted">${fmtLocalTs(row.last_seen)}</td></tr>`;
+      t += `<tr><td><code title="${escHtml(lid)}">${escHtml(lid.substring(0, 30))}</code></td><td>${escHtml(ltype)}</td><td>${statusBadge(status)}</td><td>${nf(row.session_count)}</td><td>${nf(row.fire_count)}</td><td>${fmtCost(row.total_cost_usd)}</td><td>${nf(row.tokens_in || 0)}</td><td>${nf(row.tokens_out || 0)}</td><td class="text-muted">${fmtLocalTs(row.first_seen)}</td><td class="text-muted">${fmtLocalTs(row.last_seen)}</td></tr>`;
     }
     t += '</tbody></table>';
     html += t;

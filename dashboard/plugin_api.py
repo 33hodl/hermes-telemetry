@@ -870,14 +870,17 @@ def loops(window_hours: int = 720, profile: str = "") -> dict:
     """
     rp, rp_params = _runs_profile_clause(profile)
 
-    # Tiles: count by status, total fire runs, total cost.
-    # Join runs for cost data to stay read-only (loop_facts has no cost column).
+    # Tiles: count by status, total fire runs, total cost, and
+    # footprint attribution (tokens attributed to loop sessions).
+    # Join runs for cost and token data to stay read-only.
     tiles_sql = """
         SELECT
             SUM(CASE WHEN lf.status = 'active' THEN 1 ELSE 0 END)    AS active_loops,
             SUM(CASE WHEN lf.status = 'expired' THEN 1 ELSE 0 END)   AS expired_loops,
             COALESCE(SUM(lf.fire_count), 0)                         AS total_runs,
-            ROUND(COALESCE(SUM(r.cost_usd), 0.0), 6)                AS total_cost_usd
+            ROUND(COALESCE(SUM(r.cost_usd), 0.0), 6)                AS total_cost_usd,
+            COALESCE(SUM(r.tokens_in), 0)                           AS total_tokens_in,
+            COALESCE(SUM(r.tokens_out), 0)                          AS total_tokens_out
         FROM loop_facts lf
         LEFT JOIN runs r ON lf.session_id = r.session_id
         WHERE 1=1
@@ -887,6 +890,8 @@ def loops(window_hours: int = 720, profile: str = "") -> dict:
     # Per-loop detail: group cron loops by cron_job_id; self-perpetuating
     # loops stay one-per-session (fire_count is always 1 for them).
     # Use a UNION: cron loops aggregated, self_perpetuating as-is.
+    # Footprint attribution: tokens_in / tokens_out reflect the loop's
+    # session-level token consumption (cron session IS the fire-response).
     detail_sql = """
         SELECT
             COALESCE(lf.cron_job_id, lf.session_id) AS loop_id,
@@ -894,6 +899,8 @@ def loops(window_hours: int = 720, profile: str = "") -> dict:
             MAX(lf.status)                          AS status,
             COUNT(*)                                AS session_count,
             ROUND(COALESCE(SUM(r.cost_usd), 0.0), 6) AS total_cost_usd,
+            COALESCE(SUM(r.tokens_in), 0)           AS tokens_in,
+            COALESCE(SUM(r.tokens_out), 0)          AS tokens_out,
             MIN(lf.first_seen_at)                   AS first_seen,
             MAX(lf.last_seen_at)                    AS last_seen,
             COALESCE(MAX(lf.fire_count), 0)         AS fire_count
@@ -908,6 +915,8 @@ def loops(window_hours: int = 720, profile: str = "") -> dict:
             lf.status,
             1                                       AS session_count,
             ROUND(COALESCE(r2.cost_usd, 0.0), 6)   AS total_cost_usd,
+            COALESCE(r2.tokens_in, 0)              AS tokens_in,
+            COALESCE(r2.tokens_out, 0)             AS tokens_out,
             lf.first_seen_at                        AS first_seen,
             lf.last_seen_at                         AS last_seen,
             lf.fire_count
@@ -928,6 +937,8 @@ def loops(window_hours: int = 720, profile: str = "") -> dict:
             "expired_loops": int(tiles.get("expired_loops") or 0),
             "total_runs": int(tiles.get("total_runs") or 0),
             "total_cost_usd": float(tiles.get("total_cost_usd") or 0.0),
+            "total_tokens_in": int(tiles.get("total_tokens_in") or 0),
+            "total_tokens_out": int(tiles.get("total_tokens_out") or 0),
         },
         "loops": detail,
     }
