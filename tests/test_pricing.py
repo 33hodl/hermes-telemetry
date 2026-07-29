@@ -953,6 +953,55 @@ def test_nim_ultra_free_suffix_resolves_zero():
     assert pricing.is_explicitly_priced("nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter")
 
 
+def test_dated_free_slug_resolves_zero_not_the_paid_base(tmp_path, monkeypatch):
+    """Issue #54: a `:free` slug carrying an intercalated date must stay $0.
+
+    The gateway reports `stepfun/step-3.7-flash-20260528:free` while the table
+    holds BOTH a declared-free base and the paid OpenRouter-sourced base for the
+    same family. The date segment sits between the model name and the tier
+    suffix, so a prefix match would land on the paid entry and bill a free call
+    at $0.2/$1.15 — the trap the issue warns about. The `:free` short-circuit
+    runs before the prefix scan, which is what keeps that from happening.
+
+    Existing `:free` coverage uses model-name segments (`-550b-a55b:free`); this
+    pins the date-segment shape AND the cross-provider case, where the paid base
+    is `_source: openrouter` but the call is served by `nous`.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "telemetry").mkdir()
+    (tmp_path / "telemetry" / "pricing.yaml").write_text(
+        "models:\n"
+        '  "stepfun/step-3.7-flash:free":\n'
+        "    input: 0\n"
+        "    output: 0\n"
+        "    _subscription: true\n"
+        '  "stepfun/step-3.7-flash":\n'
+        "    input: 0.2\n"
+        "    output: 1.15\n"
+        "    _auto: true\n"
+        "model_sources:\n"
+        '  "stepfun/step-3.7-flash": openrouter\n'
+    )
+    pricing.reload_custom_pricing()
+    try:
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        # The repro, and the same slug a month later — no YAML edit in between.
+        assert pricing.estimate_cost(usage, "stepfun/step-3.7-flash-20260528:free", "nous") == 0.0
+        assert pricing.estimate_cost(usage, "stepfun/step-3.7-flash-20260628:free", "nous") == 0.0
+        # Undated `:free` keeps working, and it is a known price (not a lookup miss),
+        # so no "no price entry" and no estimated-price warning.
+        assert pricing.estimate_cost(usage, "stepfun/step-3.7-flash:free", "nous") == 0.0
+        assert pricing.is_explicitly_priced("stepfun/step-3.7-flash-20260528:free", "nous")
+        # The paid slug must NOT be dragged to $0: dropping `:free` still bills,
+        # dated or not. This is what makes the free→paid transition detectable.
+        paid = pricing.estimate_cost(usage, "stepfun/step-3.7-flash", "openrouter")
+        paid_dated = pricing.estimate_cost(usage, "stepfun/step-3.7-flash-20260528", "openrouter")
+        assert abs(paid - (0.2 + 1.15)) < 1e-9
+        assert abs(paid_dated - (0.2 + 1.15)) < 1e-9
+    finally:
+        pricing.reload_custom_pricing()
+
+
 def test_nim_super_free_suffix_resolves_zero():
     """Regression: a seeded model's `:free` variant must resolve to $0, not the
     seeded paid price via prefix. Pre-fix, `…-super-120b-a12b:free` billed at the
