@@ -57,13 +57,31 @@ def _window_label(hours: int) -> str:
     return f"last {hours // 24} days"
 
 
+def _fmt_iso_display(iso: str) -> str:
+    """Format an ISO timestamp for display in the date-range label.
+
+    Strips the time portion only when it is exactly T00:00:00, and drops
+    trailing timezone suffixes (Z, +00:00) so the label reads cleanly.
+    Microseconds are trimmed when present.
+    """
+    s = iso.replace("Z", "").replace("+00:00", "")
+    if len(s) == 10:  # pure date, e.g. "2026-06-16"
+        return s
+    if s.endswith("T00:00:00"):
+        return s[:10]
+    # Trim fractional seconds if present
+    if "." in s:
+        s = s.split(".")[0]
+    return s
+
+
 def _date_range_label(date_from: str | None, date_to: str | None) -> str:
     if date_from and date_to:
-        return f"{date_from[:10]} to {date_to[:10]}"
+        return f"{_fmt_iso_display(date_from)} to {_fmt_iso_display(date_to)}"
     if date_from:
-        return f"since {date_from[:10]}"
+        return f"since {_fmt_iso_display(date_from)}"
     if date_to:
-        return f"until {date_to[:10]}"
+        return f"until {_fmt_iso_display(date_to)}"
     return "all time"
 
 

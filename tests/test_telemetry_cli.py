@@ -359,3 +359,69 @@ def test_entry_points_are_tracked_executable(tracked_path):
         f"{tracked_path} is tracked as {mode}; fix with "
         f"`git update-index --chmod=+x {tracked_path}`"
     )
+
+
+# ─── _resolve_date_range ──────────────────────────────────────────────────────
+
+
+def test_resolve_date_range_from_only_returns_none_date_to():
+    """--from alone must not synthesize date_to."""
+    from hermes_telemetry.telemetry_cli import _resolve_date_range
+
+    args = _args(date_from="2026-06-16T12:00:00Z", date_to=None)
+    date_from, date_to = _resolve_date_range(args)
+    assert date_from == "2026-06-16T12:00:00Z"
+    assert date_to is None
+
+
+def test_resolve_date_range_from_and_to_returns_both():
+    from hermes_telemetry.telemetry_cli import _resolve_date_range
+
+    args = _args(date_from="2026-06-10", date_to="2026-06-15")
+    date_from, date_to = _resolve_date_range(args)
+    assert date_from == "2026-06-10"
+    assert date_to == "2026-06-15"
+
+
+# ─── _date_range_label ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "date_from, date_to, expected",
+    [
+        # Timestamped --from (no --to) → "since <timestamp>"
+        ("2026-06-16T12:00:00Z", None, "since 2026-06-16T12:00:00"),
+        # Date-only --from (no --to) → "since <date>"
+        ("2026-06-16", None, "since 2026-06-16"),
+        # Both date-only → "X to Y"
+        ("2026-06-10", "2026-06-15", "2026-06-10 to 2026-06-15"),
+        # Timestamped from + date to → keep time on from, strip on to
+        ("2026-06-10T08:00:00Z", "2026-06-15", "2026-06-10T08:00:00 to 2026-06-15"),
+        # T00:00:00 on both → stripped
+        ("2026-06-10T00:00:00Z", "2026-06-15T00:00:00Z", "2026-06-10 to 2026-06-15"),
+        # --to only
+        (None, "2026-06-15", "until 2026-06-15"),
+        # Neither
+        (None, None, "all time"),
+        # +00:00 suffix instead of Z
+        ("2026-06-16T12:00:00+00:00", None, "since 2026-06-16T12:00:00"),
+        # Microseconds
+        ("2026-06-16T12:00:00.123456Z", None, "since 2026-06-16T12:00:00"),
+    ],
+)
+def test_date_range_label(date_from, date_to, expected):
+    from hermes_telemetry.stats import _date_range_label
+
+    assert _date_range_label(date_from, date_to) == expected
+
+
+# ─── helpers ──────────────────────────────────────────────────────────────────
+
+
+def _args(**kwargs):
+    from argparse import Namespace
+
+    ns = Namespace()
+    for k, v in kwargs.items():
+        setattr(ns, k, v)
+    return ns

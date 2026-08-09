@@ -224,12 +224,16 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser | None =
 
 
 def _resolve_date_range(args: argparse.Namespace) -> tuple[str | None, str | None]:
-    """Resolve the date range from --from/--to flags or from preset subcommand."""
+    """Resolve the date range from --from/--to flags or from preset subcommand.
+
+    When the user passes only --from, we return date_to=None so the DB
+    layer can use its natural upper bound (datetime('now')).  The label
+    renders as ``since <date_from>`` instead of the confusing
+    ``<date> to <date>`` that collapsed when both ends fell on today.
+    """
     # Explicit --from/--to flags take precedence
     if args.date_from is not None:
-        date_from = args.date_from
-        date_to = args.date_to or datetime.now(timezone.utc).isoformat()
-        return (date_from, date_to)
+        return (args.date_from, args.date_to)
 
     # Otherwise use subcommand to determine date range
     return _subcommand_to_date_range(args.subcommand)
