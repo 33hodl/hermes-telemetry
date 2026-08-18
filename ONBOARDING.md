@@ -516,29 +516,37 @@ already uses `INSERT OR IGNORE`).
 
 ### Lookup priority chain
 
-`estimate_cost(usage, model, provider="")` resolves a price by trying these in order:
+`estimate_cost(usage, model, provider="", core_price=None)` resolves a price by
+trying these in order:
 
-1. **Custom YAML** (`~/.hermes/telemetry/pricing.yaml`, `models:` section) — exact match, case-insensitive
-2. **Built-in table** (`_DEFAULT_PRICING`) — exact match
-3. **`:free` suffix rule** — any id ending in `:free` resolves to an explicit `$0`
-   (`{"input": 0.0, "output": 0.0}`), **before** the prefix fallback. See below.
-4. **Prefix fallback** — scans all of the above plus `_PREFIX_PRICING`, **longest prefix wins**
-5. **Google symmetric form** — if the above misses, tries `gemini-X` ↔ `google/gemini-X`
-6. **Unknown** → returns `$0.00`, logs a one-time WARNING
+1. **Custom YAML** (`~/.hermes/telemetry/pricing.yaml`, `models:` section),
+   **only** when the entry is `_subscription: true` (a declared flat rate) or
+   the model id ends in `:free` — these two are the only entries that outrank
+   a core-sourced snapshot, because the core has no way to know about a user's
+   flat-rate deal, and there is no verified guarantee the core resolves a
+   `:free`-suffixed id to `$0` rather than its paid base rate.
+2. **Core-sourced snapshot** (`core_price`) — the tariff Hermes core itself
+   resolved for this exact `(provider, model)` pair, read from the
+   `pricing_snapshots` table (a local SQLite read — the caller in
+   `post_api_request` passes it in; see § Core-sourced pricing snapshots
+   below). Present only once a snapshot has been captured for the pair; a
+   cold-start (never-seen) pair has none yet.
+3. **Custom YAML** (any remaining entry — a plain hand-added override or an
+   auto-fetched OpenRouter entry) — exact match, case-insensitive.
+4. **Built-in table** (`_DEFAULT_PRICING`) — exact match.
+5. **Prefix fallback** — scans all of the above plus `_PREFIX_PRICING`,
+   **longest prefix wins**.
+6. **Google symmetric form** — if the above misses, tries `gemini-X` ↔
+   `google/gemini-X`.
+7. **Unknown** → returns `$0.00`, logs a one-time WARNING.
 
-**`:free` suffix rule (issue #32):** OpenRouter advertises free-tier variants with
-a `:free` suffix (e.g. `nvidia/nemotron-3-ultra-550b-a55b:free`). These are `$0` by
-definition. The rule sits in `_lookup_form` **after** the two exact-match steps but
-**before** the prefix scan, for two reasons: (1) otherwise a suffixed free id
-inherits its paid base's price via prefix — the `nvidia/nemotron-3-ultra` seed would
-price `…-550b-a55b:free` at the paid rate, billing a free call as paid; (2) returning
-an explicit zero dict (not the unknown-model `None`) makes the call resolve as
-known-free — no estimated-price warning, and it's recorded in `known_free_models` so
-the free→paid alert fires when the gateway later drops the `:free` suffix. A user's
-explicit `:free` entry (step 1) still overrides the rule.
+**`:free` suffix rule (issue #32, #54):** unchanged from before — see below.
+The rule now also outranks `core_price`, for the same "don't bill a free call
+at the paid rate" reason it already outranks the prefix scan.
 
-Every candidate is first filtered by the **provider-aware guard** (below), so a
-source-ineligible entry is skipped and the chain falls through to the next one.
+Every candidate below step 2 is still filtered by the **provider-aware guard**
+(below); `core_price` needs no such guard — it was already resolved for this
+exact `provider` by the caller.
 
 **Why longest-prefix-wins:** `gpt-4o-mini` must not be matched by `gpt-4o` or
 `gpt-4`. `o1-mini` must not be matched by `o1`. The sorted-by-length approach
@@ -707,6 +715,15 @@ take effect immediately without a gateway restart.
 plugin records the *tariffs Hermes core itself resolves*, so we have an auditable
 ground truth with provenance to diff against `pricing.yaml` (the Faro
 over-estimate is the motivating case) and to feed the manual pricing editor.
+
+**Also the primary cost source now.** `estimate_cost()` consults the latest
+row of this same table (via `db.get_latest_pricing_snapshot`, a local read —
+no network) *before* falling through to `pricing.yaml`/`_DEFAULT_PRICING`. See
+§ Pricing Engine → Lookup priority chain above for the full precedence. This
+means `pricing drift`/`pricing backfill` are no longer required to keep costs
+accurate — they remain useful for *auditing* `pricing.yaml` itself (e.g. to
+patch the fallback tier a cold-start pair still uses) but are not the primary
+mechanism anymore.
 
 - **`core_pricing.py` is the only module that imports the Hermes core**
   (`agent.usage_pricing.get_pricing_entry`). The import is lazy (inside the call)
