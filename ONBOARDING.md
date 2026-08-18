@@ -63,7 +63,8 @@ hermes-telemetry/
 │                          per-thread connections, WAL mode, write API and
 │                          read/budget query API.
 ├── pricing.py           ← Cost estimation engine. Priority-chain lookup
-│                          (custom YAML → built-in → `:free`→$0 → prefix match).
+│                          (custom YAML `_subscription`/`:free` → core snapshot
+│                          → remaining custom/built-in → prefix match).
 │                          All 5 token components. Google-symmetric normalization.
 ├── pricing_refresh.py   ← Auto-refresh from remote pricing APIs. PricingSource
 │                          ABC, OpenRouterSource, GoogleAISource. Merge strategy
@@ -540,9 +541,17 @@ trying these in order:
    `google/gemini-X`.
 7. **Unknown** → returns `$0.00`, logs a one-time WARNING.
 
-**`:free` suffix rule (issue #32, #54):** unchanged from before — see below.
-The rule now also outranks `core_price`, for the same "don't bill a free call
-at the paid rate" reason it already outranks the prefix scan.
+**`:free` suffix rule (issue #32, #54):** OpenRouter advertises free-tier
+variants with a `:free` suffix (e.g. `nvidia/nemotron-3-ultra-550b-a55b:free`).
+These are `$0` by definition. The rule sits in `_lookup_form` **before** both
+the prefix scan and `core_price`, for two reasons: (1) otherwise a suffixed
+free id inherits its paid base's price via prefix (or, now, via a core
+snapshot resolved for the paid base) — billing a free call as paid; (2)
+returning an explicit zero dict (not the unknown-model `None`) makes the call
+resolve as known-free — no estimated-price warning, and it's recorded in
+`known_free_models` so the free→paid alert fires when the gateway later drops
+the `:free` suffix. A user's explicit `:free` entry (step 1) still overrides
+the rule.
 
 Every candidate below step 2 is still filtered by the **provider-aware guard**
 (below); `core_price` needs no such guard — it was already resolved for this
