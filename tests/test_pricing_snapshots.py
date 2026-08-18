@@ -248,6 +248,43 @@ def test_post_api_request_prices_from_existing_snapshot_over_default(monkeypatch
     assert run["cost_usd"] == pytest.approx(3.0)
 
 
+def test_post_api_request_incomplete_snapshot_falls_back_to_pricing_yaml(monkeypatch):
+    """A request-cost-only snapshot (input/output both None) has no complete
+    tariff — snapshot_to_price must return None for it, so the call prices
+    from the pricing.yaml/_DEFAULT_PRICING chain instead of silently costing
+    $0 for the missing input/output rates (core-pricing-primary Finding 1)."""
+    import hermes_telemetry.db as db
+
+    db.record_pricing_snapshot(
+        "anthropic",
+        "claude-sonnet-4-6",
+        {
+            "input_cost_per_million": None,
+            "output_cost_per_million": None,
+            "cache_read_cost_per_million": None,
+            "cache_write_cost_per_million": None,
+            "request_cost": 0.005,
+            "source": "official_docs_snapshot",
+            "source_url": None,
+            "pricing_version": "2026-08-01",
+            "fetched_at": None,
+        },
+    )
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s-incomplete-snapshot",
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        usage={"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    )
+    run = db.get_run("s-incomplete-snapshot")
+    # The built-in fallback rate (3.00 + 15.00), NOT $0 — the incomplete
+    # snapshot must not silently zero the cost.
+    assert run["cost_usd"] == pytest.approx(18.0)
+
+
 def test_post_api_request_no_snapshot_yet_falls_back_to_pricing_yaml(monkeypatch):
     """Cold start: no pricing_snapshots row exists yet for this pair, so the
     call is priced from the existing pricing.yaml/_DEFAULT_PRICING chain, same

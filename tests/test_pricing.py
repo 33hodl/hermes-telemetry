@@ -815,6 +815,35 @@ def test_snapshot_to_price_drops_request_cost():
     assert "request_cost" not in pricing.snapshot_to_price(snapshot)
 
 
+def test_snapshot_to_price_none_when_no_input_or_output():
+    """A request-cost-only snapshot (input/output both None) has no complete
+    input+output tariff — must return None, not an empty/partial dict, so the
+    caller falls through to the pricing.yaml chain instead of pricing the call
+    at $0 for missing components."""
+    snapshot = {
+        "input_cost_per_million": None,
+        "output_cost_per_million": None,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": 0.005,
+    }
+    assert pricing.snapshot_to_price(snapshot) is None
+
+
+def test_snapshot_to_price_none_when_only_output_set():
+    """A partial snapshot (output set, input missing) is still not a usable
+    price — there is no fallback for a missing input rate, so this must
+    return None rather than a dict that later prices input at $0."""
+    snapshot = {
+        "input_cost_per_million": None,
+        "output_cost_per_million": 3.0,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": None,
+    }
+    assert pricing.snapshot_to_price(snapshot) is None
+
+
 # ---------------------------------------------------------------------------
 # core_price priority (core-pricing-primary): a core-sourced snapshot outranks
 # every pricing.yaml/_DEFAULT_PRICING candidate except _subscription and the
@@ -928,6 +957,20 @@ def test_no_core_price_leaves_existing_chain_unchanged():
     without core_price and must keep passing unmodified."""
     cost = pricing.estimate_cost(
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "claude-sonnet-4-6"
+    )
+    assert abs(cost - 18.00) < 1e-9
+
+
+def test_incomplete_snapshot_core_price_none_falls_back_to_pricing_yaml():
+    """A snapshot that fails snapshot_to_price's input+output completeness
+    check produces core_price=None (the caller never passes a partial dict) —
+    proving the incomplete-snapshot case falls through to the existing
+    pricing.yaml/_DEFAULT_PRICING chain instead of pricing at $0."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "claude-sonnet-4-6",
+        provider="anthropic",
+        core_price=None,
     )
     assert abs(cost - 18.00) < 1e-9
 
@@ -1376,3 +1419,17 @@ def test_custom_pricing_reads_from_telemetry_home(tmp_path, monkeypatch):
 
     loaded = pricing._load_custom_pricing()
     assert "my/model" in loaded["models"]
+
+
+# ---------------------------------------------------------------------------
+# Ordering-change pin (core-pricing-primary): the `:free` suffix rule now runs
+# before the _DEFAULT_PRICING exact-match step (previously after). Currently
+# unobservable because no _DEFAULT_PRICING/_PREFIX_PRICING key ends in
+# ":free" — this test fails loudly if that ever changes, instead of silently
+# altering which price a `:free` id resolves to.
+# ---------------------------------------------------------------------------
+
+
+def test_no_default_or_prefix_key_ends_in_free_suffix():
+    assert not any(k.endswith(":free") for k in pricing._DEFAULT_PRICING)
+    assert not any(prefix.endswith(":free") for prefix, _ in pricing._PREFIX_PRICING)

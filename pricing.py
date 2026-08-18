@@ -261,17 +261,25 @@ def _source_eligible(source: str | None, provider: str) -> bool:
     return "openrouter" in provider.lower()
 
 
-def snapshot_to_price(snapshot: dict) -> dict:
+def snapshot_to_price(snapshot: dict) -> dict | None:
     """Convert a `pricing_snapshots` DB row into the canonical price-dict shape
-    (`input`/`output`/`cache_read`/`cache_write`) `_resolve_pricing` expects.
+    (`input`/`output`/`cache_read`/`cache_write`) `_resolve_pricing` expects, or
+    None if the snapshot has no complete input+output tariff.
 
     Only cost-per-million fields are mapped; a None/missing field is omitted
     (not passed through as None) so `_resolve_pricing`'s multiplier-based
     derivation (`cache_read = input * 0.10`, etc.) still applies exactly as it
     does for a pricing.yaml entry that omits the field. `request_cost` has no
-    analog in the 5-component cost formula (input/output/cache_read/
-    cache_write/reasoning) and is intentionally dropped — same exclusion
-    `pricing drift` already applies, for the same reason.
+    analog in the 5-component cost formula and is intentionally dropped — same
+    exclusion `pricing drift` already applies, for the same reason.
+
+    Returns None when the snapshot has no complete input+output tariff: core's
+    PricingEntry declares every rate as Optional, and an endpoint-metadata
+    entry can carry only `request_cost` with input/output both None. An
+    incomplete snapshot is not a usable price — the caller must fall through
+    to the pricing.yaml chain (core_price=None), same guard `pricing_drift.py`
+    already applies to this same table (`if snap_in is None or snap_out is
+    None: continue`).
     """
     field_map = {
         "input_cost_per_million": "input",
@@ -279,7 +287,10 @@ def snapshot_to_price(snapshot: dict) -> dict:
         "cache_read_cost_per_million": "cache_read",
         "cache_write_cost_per_million": "cache_write",
     }
-    return {dest: snapshot[src] for src, dest in field_map.items() if snapshot.get(src) is not None}
+    price = {
+        dest: snapshot[src] for src, dest in field_map.items() if snapshot.get(src) is not None
+    }
+    return price if "input" in price and "output" in price else None
 
 
 def _lookup_form(model_lc: str, provider: str = "", core_price: dict | None = None) -> dict | None:
@@ -289,7 +300,14 @@ def _lookup_form(model_lc: str, provider: str = "", core_price: dict | None = No
 
     Priority, highest first:
       1. `_subscription: true` exact match — a declared flat rate the core has
-         no way to know about.
+         no way to know about. Precondition: this wins only for a
+         source-eligible exact match (`custom_exact is not None`, i.e.
+         `_source_eligible` already passed for `provider`) — a subscription
+         entry that also carries an ineligible `_source` for this provider is
+         not currently exempted from the source guard and would lose to
+         `core_price` below. A hand-declared subscription entry carrying
+         `_source` is an unlikely combination, so this is left as-is rather
+         than special-cased.
       2. The `:free` suffix rule — a gateway promo signal. A user's explicit
          exact `:free` entry (subscription-tagged or not) still wins over the
          bare-rule $0; both outrank `core_price`, since core's canonicalization
@@ -469,9 +487,10 @@ def estimate_cost(
     `core_price`, when set, is the tariff Hermes core itself resolved for this
     exact (provider, model) pair (see `snapshot_to_price`). It outranks every
     pricing.yaml/_DEFAULT_PRICING candidate except a declared `_subscription`
-    entry or the `:free` suffix rule — see `_lookup_form` for the full chain.
-    `core_price=None` (the default) leaves resolution exactly as it was before
-    this parameter existed.
+    entry or the `:free` suffix rule — for a `_subscription` entry, only when
+    it is also a source-eligible exact match; see `_lookup_form` for the full
+    chain and that precondition. `core_price=None` (the default) leaves
+    resolution exactly as it was before this parameter existed.
 
     prompt_tokens is intentionally ignored to avoid double-counting
     (prompt_tokens = input + cache_read + cache_write in Hermes canonical usage).
