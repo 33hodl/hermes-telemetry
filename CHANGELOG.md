@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Core-sourced pricing snapshots are now the primary cost source
+
+- `estimate_cost()` now prefers the tariff Hermes core itself resolved for a
+  `(provider, model)` pair (already captured in `pricing_snapshots` by
+  `post_api_request`, read locally from SQLite — no new network calls) over
+  `pricing.yaml`/`_DEFAULT_PRICING`. A declared `_subscription: true` entry and
+  the `:free` suffix rule still outrank the core snapshot; a cold-start pair
+  with no snapshot yet falls back to the existing `pricing.yaml` chain
+  unchanged. `hermes telemetry pricing drift`/`pricing backfill` remain useful
+  for auditing `pricing.yaml` itself but are no longer required to keep costs
+  accurate. See `ONBOARDING.md § Pricing Engine → Lookup priority chain`.
+
 ## [0.8.0] - 2026-07-09
 
 ### Fixed — `/stats models` mislabeled known-free $0 rows as "no price entry"
