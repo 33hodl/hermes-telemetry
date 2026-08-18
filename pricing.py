@@ -261,6 +261,27 @@ def _source_eligible(source: str | None, provider: str) -> bool:
     return "openrouter" in provider.lower()
 
 
+def snapshot_to_price(snapshot: dict) -> dict:
+    """Convert a `pricing_snapshots` DB row into the canonical price-dict shape
+    (`input`/`output`/`cache_read`/`cache_write`) `_resolve_pricing` expects.
+
+    Only cost-per-million fields are mapped; a None/missing field is omitted
+    (not passed through as None) so `_resolve_pricing`'s multiplier-based
+    derivation (`cache_read = input * 0.10`, etc.) still applies exactly as it
+    does for a pricing.yaml entry that omits the field. `request_cost` has no
+    analog in the 5-component cost formula (input/output/cache_read/
+    cache_write/reasoning) and is intentionally dropped — same exclusion
+    `pricing drift` already applies, for the same reason.
+    """
+    field_map = {
+        "input_cost_per_million": "input",
+        "output_cost_per_million": "output",
+        "cache_read_cost_per_million": "cache_read",
+        "cache_write_cost_per_million": "cache_write",
+    }
+    return {dest: snapshot[src] for src, dest in field_map.items() if snapshot.get(src) is not None}
+
+
 def _lookup_form(model_lc: str, provider: str = "") -> dict | None:
     """Exact-then-prefix lookup against custom + defaults + prefix tables.
 

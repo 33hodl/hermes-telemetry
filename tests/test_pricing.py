@@ -765,6 +765,57 @@ def test_subscription_models_tracked_in_loader(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# snapshot_to_price — converts a pricing_snapshots DB row into the canonical
+# price-dict shape _resolve_pricing expects (core-pricing-primary).
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_to_price_maps_all_rate_fields():
+    snapshot = {
+        "input_cost_per_million": 3.0,
+        "output_cost_per_million": 15.0,
+        "cache_read_cost_per_million": 0.3,
+        "cache_write_cost_per_million": 3.75,
+        "request_cost": None,
+        "source": "official_docs_snapshot",
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+    }
+    assert pricing.snapshot_to_price(snapshot) == {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+    }
+
+
+def test_snapshot_to_price_omits_none_fields():
+    """A None cache field must be dropped, not passed through as None — so the
+    multiplier-derivation fallback in _resolve_pricing still kicks in."""
+    snapshot = {
+        "input_cost_per_million": 1.0,
+        "output_cost_per_million": 2.0,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": None,
+    }
+    assert pricing.snapshot_to_price(snapshot) == {"input": 1.0, "output": 2.0}
+
+
+def test_snapshot_to_price_drops_request_cost():
+    """request_cost has no analog in the 5-component formula — must never leak
+    into the returned dict."""
+    snapshot = {
+        "input_cost_per_million": 1.0,
+        "output_cost_per_million": 2.0,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": 0.005,
+    }
+    assert "request_cost" not in pricing.snapshot_to_price(snapshot)
+
+
+# ---------------------------------------------------------------------------
 # Provider-assumed fallback (issue #42) — inverted safe-default for the lookup
 # path. A source-ineligible entry is applied (flagged + warned once) instead of
 # recording a silent $0, but only when no eligible candidate exists.
