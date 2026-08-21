@@ -1572,7 +1572,13 @@ function simpleMarkdown(text) {
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // Only http(s) links become anchors. Any other scheme (javascript:, data:,
+  // file:) renders as plain text — artifact content is untrusted model/tool
+  // output, so a bare href would be an injection vector.
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(m, label, href) {
+    if (!/^https?:\/\//i.test(href.trim())) return label;
+    return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+  });
   html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
   html = html.replace(/^[*-] (.+)$/gm, '<li>$1</li>');
   html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
