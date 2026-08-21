@@ -213,6 +213,100 @@ def test_post_api_request_records_snapshot(monkeypatch):
     assert row["api_mode"] == "messages"
 
 
+def test_post_api_request_prices_from_existing_snapshot_over_default(monkeypatch):
+    """When a pricing_snapshots row already exists for this (provider, model)
+    pair, the recorded cost must come from it — not from the built-in/custom
+    pricing.yaml table (core-pricing-primary)."""
+    import hermes_telemetry.db as db
+
+    db.record_pricing_snapshot(
+        "anthropic",
+        "claude-sonnet-4-6",
+        {
+            "input_cost_per_million": 1.0,
+            "output_cost_per_million": 2.0,
+            "cache_read_cost_per_million": None,
+            "cache_write_cost_per_million": None,
+            "request_cost": None,
+            "source": "official_docs_snapshot",
+            "source_url": None,
+            "pricing_version": "2026-08-01",
+            "fetched_at": None,
+        },
+    )
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s-core-primary",
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        usage={"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    )
+    run = db.get_run("s-core-primary")
+    # Snapshot rate (1.0 + 2.0), not the built-in default (3.00 + 15.00).
+    assert run["cost_usd"] == pytest.approx(3.0)
+
+
+def test_post_api_request_incomplete_snapshot_falls_back_to_pricing_yaml(monkeypatch):
+    """A request-cost-only snapshot (input/output both None) has no complete
+    tariff — snapshot_to_price must return None for it, so the call prices
+    from the pricing.yaml/_DEFAULT_PRICING chain instead of silently costing
+    $0 for the missing input/output rates (core-pricing-primary Finding 1)."""
+    import hermes_telemetry.db as db
+
+    db.record_pricing_snapshot(
+        "anthropic",
+        "claude-sonnet-4-6",
+        {
+            "input_cost_per_million": None,
+            "output_cost_per_million": None,
+            "cache_read_cost_per_million": None,
+            "cache_write_cost_per_million": None,
+            "request_cost": 0.005,
+            "source": "official_docs_snapshot",
+            "source_url": None,
+            "pricing_version": "2026-08-01",
+            "fetched_at": None,
+        },
+    )
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s-incomplete-snapshot",
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        usage={"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    )
+    run = db.get_run("s-incomplete-snapshot")
+    # The built-in fallback rate (3.00 + 15.00), NOT $0 — the incomplete
+    # snapshot must not silently zero the cost.
+    assert run["cost_usd"] == pytest.approx(18.0)
+
+
+def test_post_api_request_no_snapshot_yet_falls_back_to_pricing_yaml(monkeypatch):
+    """Cold start: no pricing_snapshots row exists yet for this pair, so the
+    call is priced from the existing pricing.yaml/_DEFAULT_PRICING chain, same
+    as before this change — proving core_price=None is a true no-op."""
+    import hermes_telemetry.core_pricing as core_pricing
+    import hermes_telemetry.db as db
+
+    # resolve() finds nothing live either — a genuine cold pair.
+    monkeypatch.setattr(core_pricing, "resolve", lambda *a, **k: None)
+    ctx = MockPluginContext()
+    _init_mod.register(ctx)
+    ctx.fire(
+        "post_api_request",
+        session_id="s-cold-start",
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        usage={"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    )
+    run = db.get_run("s-cold-start")
+    assert run["cost_usd"] == pytest.approx(18.0)  # 3.00 + 15.00, the built-in rate
+
+
 def test_post_api_request_snapshot_is_throttled(monkeypatch):
     import hermes_telemetry.core_pricing as core_pricing
 

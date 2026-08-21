@@ -261,58 +261,103 @@ def _source_eligible(source: str | None, provider: str) -> bool:
     return "openrouter" in provider.lower()
 
 
-def _lookup_form(model_lc: str, provider: str = "") -> dict | None:
-    """Exact-then-prefix lookup against custom + defaults + prefix tables.
+def snapshot_to_price(snapshot: dict) -> dict | None:
+    """Convert a `pricing_snapshots` DB row into the canonical price-dict shape
+    (`input`/`output`/`cache_read`/`cache_write`) `_resolve_pricing` expects, or
+    None if the snapshot has no complete input+output tariff.
 
-    Custom wins over defaults wins over the curated prefix table (matching
-    the precedence in `_lookup_base`'s callers). Among equal-length prefixes,
-    the stable sort preserves source order so the higher-precedence source
-    still wins.
+    Only cost-per-million fields are mapped; a None/missing field is omitted
+    (not passed through as None) so `_resolve_pricing`'s multiplier-based
+    derivation (`cache_read = input * 0.10`, etc.) still applies exactly as it
+    does for a pricing.yaml entry that omits the field. `request_cost` has no
+    analog in the 5-component cost formula and is intentionally dropped — same
+    exclusion `pricing drift` already applies, for the same reason.
 
-    `provider` drives the source guard (`_source_eligible`): a source-ineligible
-    custom entry is skipped so the lookup falls through to the next candidate
-    (e.g. a NIM call skips the same-id OpenRouter entry and lands on the
-    source-neutral `_DEFAULT_PRICING` seed).
+    Returns None when the snapshot has no complete input+output tariff: core's
+    PricingEntry declares every rate as Optional, and an endpoint-metadata
+    entry can carry only `request_cost` with input/output both None. An
+    incomplete snapshot is not a usable price — the caller must fall through
+    to the pricing.yaml chain (core_price=None), same guard `pricing_drift.py`
+    already applies to this same table (`if snap_in is None or snap_out is
+    None: continue`).
+    """
+    field_map = {
+        "input_cost_per_million": "input",
+        "output_cost_per_million": "output",
+        "cache_read_cost_per_million": "cache_read",
+        "cache_write_cost_per_million": "cache_write",
+    }
+    price = {
+        dest: snapshot[src] for src, dest in field_map.items() if snapshot.get(src) is not None
+    }
+    return price if "input" in price and "output" in price else None
 
-    Inverted last-resort (issue #42): if NO source-eligible candidate matches but
-    a source-ineligible one would have, the lookup returns that price tagged
-    ``_provider_assumed: True`` instead of ``None``. For a cost tracker, applying
-    a best-effort rate (with a one-time warning at `estimate_cost`) beats
-    silently recording $0 on a real paid call. Source-eligible matches and the
-    `_DEFAULT_PRICING`/`:free` rules always win first, so this only fires when the
-    sole price available is one the guard would otherwise reject — the common
-    "popular model resold at the OpenRouter rate" case (e.g. Nous Portal serving
-    `moonshotai/kimi-k2.6`). A source-neutral override or `_subscription` entry
-    still pre-empts it.
+
+def _lookup_form(model_lc: str, provider: str = "", core_price: dict | None = None) -> dict | None:
+    """Exact-then-prefix lookup against custom + defaults + prefix tables, with
+    an optional core-sourced snapshot slotted in between the two always-win
+    overrides and everything else (core-pricing-primary).
+
+    Priority, highest first:
+      1. `_subscription: true` exact match — a declared flat rate the core has
+         no way to know about. Precondition: this wins only for a
+         source-eligible exact match (`custom_exact is not None`, i.e.
+         `_source_eligible` already passed for `provider`) — a subscription
+         entry that also carries an ineligible `_source` for this provider is
+         not currently exempted from the source guard and would lose to
+         `core_price` below. A hand-declared subscription entry carrying
+         `_source` is an unlikely combination, so this is left as-is rather
+         than special-cased.
+      2. The `:free` suffix rule — a gateway promo signal. A user's explicit
+         exact `:free` entry (subscription-tagged or not) still wins over the
+         bare-rule $0; both outrank `core_price`, since core's canonicalization
+         keeps the `:free` suffix but there is no verified guarantee it
+         resolves to $0 rather than the paid base rate (issue #32/#54).
+      3. `core_price` — a snapshot of the tariff Hermes core itself resolved
+         for this exact `(provider, model)` pair, if the caller found one.
+         Outranks every remaining candidate below.
+      4. Everything else, unchanged from before core-pricing-primary: a
+         source-eligible plain custom exact match, `_DEFAULT_PRICING`, then
+         the provider-aware longest-prefix scan. Source-ineligible fallbacks
+         are remembered as `assumed` and returned tagged `_provider_assumed`
+         only if nothing above ever matched (issue #42).
+
+    `provider` drives the source guard (`_source_eligible`) for step 4 exactly
+    as before — irrelevant to steps 1-3, which are provider-agnostic overrides
+    or (for `core_price`) already resolved for this exact provider by the
+    caller.
     """
     custom = _load_custom_pricing()
     custom_models = custom.get("models", {})
     model_sources = custom.get("model_sources", {})
+    subscription_models = custom.get("subscription_models", set())
 
-    # Best source-ineligible match seen, used only if nothing eligible matches.
-    # An ineligible *exact* match outranks any ineligible prefix match.
     assumed: dict | None = None
-
+    custom_exact: dict | None = None
     if model_lc in custom_models:
         if _source_eligible(model_sources.get(model_lc), provider):
-            return custom_models[model_lc]
-        assumed = custom_models[model_lc]
+            custom_exact = custom_models[model_lc]
+        else:
+            assumed = custom_models[model_lc]
+
+    # Tier 1 — always wins, even over a core-sourced snapshot.
+    if custom_exact is not None and model_lc in subscription_models:
+        return custom_exact
+
+    # Tier 2 — always wins, even over a core-sourced snapshot. A user's
+    # explicit exact `:free` entry still overrides the bare rule.
+    if model_lc.endswith(":free"):
+        return custom_exact if custom_exact is not None else {"input": 0.0, "output": 0.0}
+
+    # Tier 3 — core-sourced snapshot, when one exists.
+    if core_price is not None:
+        return core_price
+
+    # Tier 4 — existing pricing.yaml chain, unchanged.
+    if custom_exact is not None:
+        return custom_exact
     if model_lc in _DEFAULT_PRICING:
         return _DEFAULT_PRICING[model_lc]
-    # Free-tier suffix: OpenRouter (and similar gateways) advertise free variants
-    # with a ":free" suffix, e.g. "nvidia/nemotron-3-ultra-550b-a55b:free". These
-    # are $0 by definition. Short-circuit to an explicit zero price BEFORE the
-    # prefix scan, for two reasons:
-    #   1. Otherwise the suffixed free id inherits its paid base price via prefix
-    #      (e.g. the "nvidia/nemotron-3-ultra" seed would price "…-550b-a55b:free"
-    #      at $0.50/$2.50 — billing a free call as paid).
-    #   2. Returning an explicit zero dict (not the unknown-model None) makes the
-    #      call resolve as known-free: no estimated-price warning, and recorded in
-    #      known_free_models so the free→paid alert fires when the gateway later
-    #      drops the ":free" suffix and starts charging (issues #16/#32).
-    # A user's explicit ":free" entry (matched above) still wins over this rule.
-    if model_lc.endswith(":free"):
-        return {"input": 0.0, "output": 0.0}
     # Prefix fallback: scan ALL known keys — custom (auto-refreshed + user) and
     # default exact keys, plus the curated family-prefix table — longest prefix
     # wins. This lets an auto-refreshed key like 'google/gemini-3-flash-preview'
@@ -336,7 +381,7 @@ def _lookup_form(model_lc: str, provider: str = "") -> dict | None:
     return None
 
 
-def _lookup_base(model: str, provider: str = "") -> dict | None:
+def _lookup_base(model: str, provider: str = "", core_price: dict | None = None) -> dict | None:
     """Return the raw pricing dict for a model (no cache derivation yet).
 
     Two-pass strategy: first try the model id as-is. If that misses, try the
@@ -344,24 +389,31 @@ def _lookup_base(model: str, provider: str = "") -> dict | None:
     and OpenRouter-routed callers get identical pricing without requiring
     both entries to coexist in the pricing data. Non-Google prefixes never
     get this treatment — see `_google_alt_form`.
+
+    `core_price`, when set, is only ever consulted by the *first* pass: if it
+    is not None, `_lookup_form` returns it immediately (Tier 3) and the alt-
+    form retry is never reached. When it IS reached (core_price is None or a
+    Tier 1/2 override already resolved the primary form), passing the same
+    (already-None-or-consumed) core_price through keeps the two calls
+    consistent — no second snapshot lookup is made for the alt form.
     """
     model_lc = model.lower()
-    result = _lookup_form(model_lc, provider)
+    result = _lookup_form(model_lc, provider, core_price)
     if result is not None:
         return result
     alt = _google_alt_form(model_lc)
     if alt is not None:
-        return _lookup_form(alt, provider)
+        return _lookup_form(alt, provider, core_price)
     return None
 
 
-def _resolve_pricing(model: str, provider: str = "") -> dict | None:
+def _resolve_pricing(model: str, provider: str = "", core_price: dict | None = None) -> dict | None:
     """Return a fully-resolved pricing dict with all 5 keys.
 
     Derives cache prices from multipliers if not explicitly set.
     Returns None if model is completely unknown.
     """
-    base = _lookup_base(model, provider)
+    base = _lookup_base(model, provider, core_price)
     if base is None:
         return None
 
@@ -415,7 +467,9 @@ def _resolve_pricing(model: str, provider: str = "") -> dict | None:
     return resolved
 
 
-def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
+def estimate_cost(
+    usage: dict, model: str, provider: str = "", core_price: dict | None = None
+) -> float:
     """Return estimated cost in USD for a usage dict.
 
     usage dict keys (all optional/nullable):
@@ -429,6 +483,14 @@ def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     makes the lookup provider-aware (issue #24): an OpenRouter-sourced price is
     never applied to a call another provider served. `provider=""` keeps the
     historical provider-blind behaviour for backward compatibility.
+
+    `core_price`, when set, is the tariff Hermes core itself resolved for this
+    exact (provider, model) pair (see `snapshot_to_price`). It outranks every
+    pricing.yaml/_DEFAULT_PRICING candidate except a declared `_subscription`
+    entry or the `:free` suffix rule — for a `_subscription` entry, only when
+    it is also a source-eligible exact match; see `_lookup_form` for the full
+    chain and that precondition. `core_price=None` (the default) leaves
+    resolution exactly as it was before this parameter existed.
 
     prompt_tokens is intentionally ignored to avoid double-counting
     (prompt_tokens = input + cache_read + cache_write in Hermes canonical usage).
@@ -455,7 +517,7 @@ def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     ):
         return 0.0
 
-    prices = _resolve_pricing(model, provider)
+    prices = _resolve_pricing(model, provider, core_price)
     if prices is None:
         # Dedup per (model, provider): the same model id can be unpriced under
         # one provider yet priced under another, so each pairing warns once.
@@ -509,18 +571,21 @@ def estimate_cost(usage: dict, model: str, provider: str = "") -> float:
     return cost
 
 
-def is_explicitly_priced(model: str, provider: str = "") -> bool:
+def is_explicitly_priced(model: str, provider: str = "", core_price: dict | None = None) -> bool:
     """Return True if *model* has an explicit pricing entry (even if $0).
 
     Distinguishes genuinely-free models (explicit zero price or _subscription)
     from unknown models (no entry at all, which also produce cost==0 via the
     fallback). Only explicitly-priced-at-$0 models are recorded in
     known_free_models and can trigger the free→paid transition alert.
+
+    `core_price`, when set, counts as an explicit price too — a model priced
+    only by a core-sourced snapshot is not a lookup miss.
     """
-    return _resolve_pricing(model, provider) is not None
+    return _resolve_pricing(model, provider, core_price) is not None
 
 
-def is_provider_assumed(model: str, provider: str = "") -> bool:
+def is_provider_assumed(model: str, provider: str = "", core_price: dict | None = None) -> bool:
     """Return True if pricing *model* under *provider* relies on a provider-assumed
     rate (issue #42).
 
@@ -531,8 +596,14 @@ def is_provider_assumed(model: str, provider: str = "") -> bool:
     the user prompted to pin the rate. Returns False for unknown models, genuine
     source-eligible matches, `_DEFAULT_PRICING` seeds, and `:free`/`_subscription`
     entries.
+
+    Also False whenever `core_price` is set: a core-sourced snapshot is already
+    resolved for this exact (provider, model) pair, so the collision this guard
+    protects against does not apply to it — `_lookup_form` returns `core_price`
+    outright, before ever reaching the source-ineligible fallback branch that
+    sets `_provider_assumed`.
     """
-    resolved = _resolve_pricing(model, provider)
+    resolved = _resolve_pricing(model, provider, core_price)
     return bool(resolved and resolved.get("_provider_assumed"))
 
 

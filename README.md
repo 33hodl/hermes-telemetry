@@ -1345,7 +1345,7 @@ global    $0.1812 / $2.00    9%  [daily]
 |Pricing auto-refresh (OpenRouter API)|✅ 320 models fetched, manual overrides preserved   |
 |Estimated-price model handling       |✅ Negative prices → $0.00, budget degradation      |
 |Dashboard (HTML, auto-refresh 30s)   |✅ Charts, tables, budget bar, provider distribution|
-|604 tests pass                       |✅                                                  |
+|623 tests pass                       |✅                                                  |
 
 -----
 
@@ -1372,12 +1372,12 @@ pip install pytest pyyaml
 pytest tests/ -v
 ```
 
-**Test suite (610 tests, 604 passing + 6 skipped):**
+**Test suite (629 tests, 623 passing + 6 skipped):**
 
 |File                             |Tests|Coverage                                                                                                                       |
 |---------------------------------|-----|-------------------------------------------------------------------------------------------------------------------------------|
 |`test_db.py`                     |114  |Schema migrations (v1→v16), CRUD, aggregations, concurrent WAL writes, `known_free_models`, pricing snapshots, subagent edges, cache layer|
-|`test_pricing.py`                |68   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`|
+|`test_pricing.py`                |84   |Cache/reasoning split, no double-counting of `prompt_tokens`, YAML overrides, prefix matching, provider-aware source guard, NIM seeds (incl. `nemotron-3-ultra` paid + `:free` suffix → $0 rule), subscription tag, unknown model handling, `is_explicitly_priced`, `get_known_free_models`, `snapshot_to_price`/`core_price` priority (core-pricing-primary)|
 |`test_dashboard.py`              |47   |HTML dashboard rendering, auto-refresh, chart data endpoints, viewer-timezone budget windows, cache layer (TTL / serve-stale)  |
 |`test_telemetry_cli.py`          |37   |CLI subcommands (stats/budget/pricing/sync-profiles), all window variants, text + `--json` output, entry point smoke test, tracked exec bit on the standalone binary and the pre-commit hook|
 |`test_budget.py`                 |34   |ok/soft/hard verdicts, estimated-to-soft degradation, anti-spam ledger, cron pause, per-scope routing, `/budget set` (default + per-profile/id override) hot-reload|
@@ -1386,7 +1386,7 @@ pytest tests/ -v
 |`test_sync_profiles.py`          |29   |Profile consolidation via `HERMES_TELEMETRY_HOME`: `.env` upsert, name scoping, template preservation                          |
 |`test_stats_smells.py`           |22   |Anti-pattern (smell) detection and scoring                                                                                     |
 |`test_setup.py`                  |21   |First-time setup wizard, pricing/budget file generation, interactive + non-interactive paths                                   |
-|`test_pricing_snapshots.py`      |21   |Core-sourced pricing snapshots: append-per-change, `resolved_model` canonicalization, capture throttle                         |
+|`test_pricing_snapshots.py`      |24   |Core-sourced pricing snapshots: append-per-change, `resolved_model` canonicalization, capture throttle, incomplete-snapshot fallback|
 |`test_init.py`                   |19   |Cron session ID regex, tool success/failure parsing, free→paid transition alert (detection, queueing, injection, backfill)     |
 |`test_stats_models.py`           |18   |Per-model breakdown, `/stats models` output format                                                                             |
 |`test_subagent_reconciliation.py`|15   |Parent + child hook sequence, token reconciliation, no double-counting                                                         |

@@ -765,6 +765,266 @@ def test_subscription_models_tracked_in_loader(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# snapshot_to_price — converts a pricing_snapshots DB row into the canonical
+# price-dict shape _resolve_pricing expects (core-pricing-primary).
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_to_price_maps_all_rate_fields():
+    snapshot = {
+        "input_cost_per_million": 3.0,
+        "output_cost_per_million": 15.0,
+        "cache_read_cost_per_million": 0.3,
+        "cache_write_cost_per_million": 3.75,
+        "request_cost": None,
+        "source": "official_docs_snapshot",
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+    }
+    assert pricing.snapshot_to_price(snapshot) == {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+    }
+
+
+def test_snapshot_to_price_omits_none_fields():
+    """A None cache field must be dropped, not passed through as None — so the
+    multiplier-derivation fallback in _resolve_pricing still kicks in."""
+    snapshot = {
+        "input_cost_per_million": 1.0,
+        "output_cost_per_million": 2.0,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": None,
+    }
+    assert pricing.snapshot_to_price(snapshot) == {"input": 1.0, "output": 2.0}
+
+
+def test_snapshot_to_price_drops_request_cost():
+    """request_cost has no analog in the 5-component formula — must never leak
+    into the returned dict."""
+    snapshot = {
+        "input_cost_per_million": 1.0,
+        "output_cost_per_million": 2.0,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": 0.005,
+    }
+    assert "request_cost" not in pricing.snapshot_to_price(snapshot)
+
+
+def test_snapshot_to_price_none_when_no_input_or_output():
+    """A request-cost-only snapshot (input/output both None) has no complete
+    input+output tariff — must return None, not an empty/partial dict, so the
+    caller falls through to the pricing.yaml chain instead of pricing the call
+    at $0 for missing components."""
+    snapshot = {
+        "input_cost_per_million": None,
+        "output_cost_per_million": None,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": 0.005,
+    }
+    assert pricing.snapshot_to_price(snapshot) is None
+
+
+def test_snapshot_to_price_none_when_only_output_set():
+    """A partial snapshot (output set, input missing) is still not a usable
+    price — there is no fallback for a missing input rate, so this must
+    return None rather than a dict that later prices input at $0."""
+    snapshot = {
+        "input_cost_per_million": None,
+        "output_cost_per_million": 3.0,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "request_cost": None,
+    }
+    assert pricing.snapshot_to_price(snapshot) is None
+
+
+# ---------------------------------------------------------------------------
+# core_price priority (core-pricing-primary): a core-sourced snapshot outranks
+# every pricing.yaml/_DEFAULT_PRICING candidate except _subscription and the
+# :free suffix rule.
+# ---------------------------------------------------------------------------
+
+
+def test_core_price_wins_over_plain_custom_entry(tmp_path, monkeypatch):
+    """A core-sourced snapshot outranks a plain (non-subscription) custom entry."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "acme/model-x":
+            input: 9.00
+            output: 9.00
+    """),
+    )
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "acme/model-x",
+        provider="acme",
+        core_price={"input": 1.0, "output": 2.0},
+    )
+    assert abs(cost - 3.00) < 1e-9
+
+
+def test_core_price_wins_over_existing_pricing_entry():
+    """A core-sourced snapshot outranks the shipped pricing table too — the
+    committed fixture entry for claude-sonnet-4-6 mirrors _DEFAULT_PRICING
+    (3.00/15.00), so this proves the snapshot beats both at once."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "claude-sonnet-4-6",
+        provider="anthropic",
+        core_price={"input": 1.0, "output": 2.0},
+    )
+    assert abs(cost - 3.00) < 1e-9  # not 3.00 + 15.00 = 18.00
+
+
+def test_subscription_still_wins_over_core_price(tmp_path, monkeypatch):
+    """A declared _subscription entry outranks a core snapshot — the core has
+    no way to know about a user's flat-rate deal."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "qwen3.7-plus":
+            input: 0.0
+            output: 0.0
+            _subscription: true
+    """),
+    )
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "qwen3.7-plus",
+        provider="nous",
+        core_price={"input": 5.0, "output": 5.0},
+    )
+    assert cost == 0.0
+
+
+def test_free_suffix_still_wins_over_core_price():
+    """The `:free` suffix rule outranks a core snapshot: core's canonicalization
+    keeps the `:free` suffix but there is no verified guarantee it resolves to
+    $0 rather than the paid base rate — the whole point of the existing rule."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000},
+        "some-vendor/special:free",
+        provider="openrouter",
+        core_price={"input": 5.0, "output": 5.0},
+    )
+    assert cost == 0.0
+
+
+def test_dated_free_slug_still_wins_over_core_price(tmp_path, monkeypatch):
+    """Regression guard tying this change to issue #54: a dated `:free` slug
+    with no exact pricing.yaml entry must resolve to $0 even when a (wrongly
+    paid-priced) core snapshot exists for that exact dated+free id."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "stepfun/step-3.7-flash:free":
+            input: 0
+            output: 0
+            _subscription: true
+          "stepfun/step-3.7-flash":
+            input: 0.2
+            output: 1.15
+        model_sources:
+          "stepfun/step-3.7-flash": openrouter
+    """),
+    )
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "stepfun/step-3.7-flash-20260528:free",
+        provider="nous",
+        core_price={"input": 0.2, "output": 1.15},
+    )
+    assert cost == 0.0
+
+
+def test_no_core_price_leaves_existing_chain_unchanged():
+    """core_price=None (the default, and what a cold-start pair gets before its
+    first snapshot capture) must not change a single existing assertion in this
+    file — every test above this one in test_pricing.py calls estimate_cost
+    without core_price and must keep passing unmodified."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000}, "claude-sonnet-4-6"
+    )
+    assert abs(cost - 18.00) < 1e-9
+
+
+def test_incomplete_snapshot_core_price_none_falls_back_to_pricing_yaml():
+    """A snapshot that fails snapshot_to_price's input+output completeness
+    check produces core_price=None (the caller never passes a partial dict) —
+    proving the incomplete-snapshot case falls through to the existing
+    pricing.yaml/_DEFAULT_PRICING chain instead of pricing at $0."""
+    cost = pricing.estimate_cost(
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        "claude-sonnet-4-6",
+        provider="anthropic",
+        core_price=None,
+    )
+    assert abs(cost - 18.00) < 1e-9
+
+
+def test_core_price_derives_cache_from_multiplier(tmp_path, monkeypatch):
+    """A snapshot with no cache fields still gets the standard multiplier-
+    derived cache_read, exactly like a pricing.yaml entry that omits it."""
+    cost = pricing.estimate_cost(
+        {"cache_read_tokens": 1_000_000},
+        "claude-sonnet-4-6",
+        provider="anthropic",
+        core_price={"input": 10.0, "output": 20.0},
+    )
+    assert abs(cost - 1.00) < 1e-9  # 10.0 * default 0.10 cache_read multiplier
+
+
+def test_core_price_never_flags_provider_assumed(tmp_path, monkeypatch):
+    """Even when a source-ineligible pricing.yaml candidate also exists, a
+    snapshot-sourced cost is never flagged provider_assumed — the snapshot is
+    already resolved for this exact (provider, model) pair, so the issue #42
+    collision guard's failure mode does not apply to it."""
+    _write_pricing_yaml(
+        tmp_path,
+        monkeypatch,
+        textwrap.dedent("""
+        models:
+          "moonshotai/kimi-k2.6":
+            input: 0.68
+            output: 3.41
+            _source: openrouter
+    """),
+    )
+    assert (
+        pricing.is_provider_assumed(
+            "moonshotai/kimi-k2.6", "nous", core_price={"input": 1.0, "output": 1.0}
+        )
+        is False
+    )
+
+
+def test_core_price_counts_as_explicitly_priced():
+    """A model with no pricing.yaml/_DEFAULT_PRICING entry at all still counts
+    as explicitly priced when only a core snapshot prices it — not an unknown-
+    model lookup miss (this is what lets a $0 core-priced call still register
+    as known-free for the free→paid transition alert)."""
+    assert (
+        pricing.is_explicitly_priced(
+            "totally-new-model-xyz", "acme", core_price={"input": 1.0, "output": 1.0}
+        )
+        is True
+    )
+
+
+# ---------------------------------------------------------------------------
 # Provider-assumed fallback (issue #42) — inverted safe-default for the lookup
 # path. A source-ineligible entry is applied (flagged + warned once) instead of
 # recording a silent $0, but only when no eligible candidate exists.
@@ -1159,3 +1419,17 @@ def test_custom_pricing_reads_from_telemetry_home(tmp_path, monkeypatch):
 
     loaded = pricing._load_custom_pricing()
     assert "my/model" in loaded["models"]
+
+
+# ---------------------------------------------------------------------------
+# Ordering-change pin (core-pricing-primary): the `:free` suffix rule now runs
+# before the _DEFAULT_PRICING exact-match step (previously after). Currently
+# unobservable because no _DEFAULT_PRICING/_PREFIX_PRICING key ends in
+# ":free" — this test fails loudly if that ever changes, instead of silently
+# altering which price a `:free` id resolves to.
+# ---------------------------------------------------------------------------
+
+
+def test_no_default_or_prefix_key_ends_in_free_suffix():
+    assert not any(k.endswith(":free") for k in pricing._DEFAULT_PRICING)
+    assert not any(prefix.endswith(":free") for prefix, _ in pricing._PREFIX_PRICING)
