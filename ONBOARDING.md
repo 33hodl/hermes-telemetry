@@ -27,6 +27,7 @@
 16. [PluginContext API](#plugincontext-api)
 17. [Valid Hooks Reference](#valid-hooks-reference)
 18. [Dashboard Plugin Surface](#dashboard-plugin-surface)
+19. [Hermes Session Storage (transcripts and artifacts)](#hermes-session-storage-transcripts-and-artifacts)
 
 ---
 
@@ -2087,3 +2088,97 @@ Both surfaces are upgraded with a single `git pull` in
 `~/.hermes/plugins/hermes-telemetry`. The manifest version is pinned to
 `__version__` by `test_plugin_version_matches_package`, so a release tag
 implicitly ships both surfaces in lockstep.
+
+---
+
+## Hermes Session Storage (transcripts and artifacts)
+
+Telemetry's own database records *what a session cost*, never *what it produced*:
+`tool_calls` stores `tool_name, ok, latency_ms` and nothing else — no arguments, no
+results, no paths. Any feature that wants to surface a session's output must read
+Hermes' own state. This section documents that state so nobody re-derives it wrong.
+
+Verified 2026-08-21 against `NousResearch/hermes-agent@main` and a real `~/.hermes`.
+
+### `sessions/` is a flat directory — there is no per-session folder
+
+```
+HERMES_HOME/sessions/
+├── sessions.json                  ← session index
+└── request_dump_*.json            ← per-request payload dumps
+```
+
+That is the whole layout. A real home was inspected: 34 files, **0 subdirectories**.
+
+- `gateway/config.py` defines `sessions_dir = get_hermes_home() / "sessions"`.
+- `gateway/session.py` documents the legacy transcript path as
+  `sessions_dir / f"{session_id}.json"` — a **file**, and it also explains why
+  `session_id` passes a strict guard: it is interpolated straight into a filename.
+
+**Never assume `sessions/<session_id>/` exists.** Code written against that shape
+returns empty for every session and looks like "no data" rather than a bug. This
+already cost one implementation (PR #80, reverted).
+
+`request_dump_*.json` holds full request payloads including system prompts. It must
+never be served by either dashboard surface.
+
+### Transcripts live in `state.db`
+
+`HERMES_HOME/state.db` (SQLite, WAL) is the transcript store:
+
+| Table | Shape |
+|-------|-------|
+| `sessions` | `id` (PK, the session id), `source`, `model`, `system_prompt`, `parent_session_id`, `started_at`, `ended_at`, token counters |
+| `messages` | `session_id` FK, `role`, `content`, `tool_calls`, `tool_name`, `timestamp`, `token_count`, `active`, `compacted` — plus `messages_fts` full-text mirrors |
+
+`idx_messages_session` covers `(session_id, timestamp)`, so per-session reads are cheap
+even on a large DB (135 MB observed). Upstream `tests/gateway/test_load_transcript_db_only.py`
+confirms the DB is the source of truth, not the legacy JSON file.
+
+**Per profile:** each profile home carries its own `state.db` at
+`HERMES_HOME/profiles/<name>/state.db` (verified on disk). Resolve which one to open
+from `runs.profile` (schema v12): `NULL` → the root `state.db`, otherwise the profile's.
+Telemetry consolidates rows into the root DB, so a run in the root telemetry DB may
+still have its transcript in a profile home.
+
+### Joining telemetry to Hermes sessions
+
+`runs.session_id` matches `state.db`'s `sessions.id` verbatim — same format for both
+interactive (`20260704_150355_99b11196`) and cron (`cron_<job>_<ts>`) runs.
+
+The join is **lossy by design**: measured on a real pair of databases, 104 of 191
+telemetry runs still existed in `state.db` (54%). Telemetry is append-only and Hermes
+prunes sessions, so older runs have no transcript and never will. This is the same
+asymmetry `serve.py::_active_hermes_session_ids()` already handles when it soft-hides
+deleted sessions.
+
+### Artifacts are transcript references, not stored files
+
+Hermes has **no artifact store**. Its own desktop Artifacts tab
+(`apps/desktop/src/app/artifacts/artifact-utils.ts`) derives artifacts by parsing
+session messages for:
+
+- `MEDIA:` tags and `Screenshot path:` lines
+- markdown image and link references
+- tool-result keys — `output_path`, `saved_to`, `screenshot_path`, `files_created`,
+  `generated_file`, `artifact_*`, `local_path`, ...
+- absolute, relative and Windows path patterns in message text
+
+Every hit is a **reference** to a file wherever the tool happened to write it — usually
+the session's working directory, sometimes a cache, sometimes already deleted. Any
+telemetry surface that lists artifacts inherits that: paths are untrusted, may not
+exist, and live outside any directory this plugin controls. Serving their contents is a
+separate security problem from listing them (allowlisted roots, symlinks resolved before
+the decision, size caps, a real bytes endpoint).
+
+### Rules for reading `state.db`
+
+`state.db` is Hermes' private schema, not a plugin API. It carries no compatibility
+promise and can change on any upgrade.
+
+- Open read-only (`file:...?mode=ro`); never create it, never write, never migrate it.
+- Access columns defensively and degrade to an empty result on any schema drift,
+  missing file, or lock — a missing transcript is not an error state for telemetry.
+- Keep the connection short-lived: a live Hermes is writing to the same WAL.
+- Cover schema drift in tests explicitly, the same way the migration tests cover
+  upgrade paths.
