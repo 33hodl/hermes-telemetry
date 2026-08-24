@@ -27,11 +27,13 @@ Documentation and comments in this repo can be stale. The source is the only aut
 - Any claim about hook firing order or frequency ("fires once per turn", etc.)
 - Any PluginContext method not already listed in `ONBOARDING.md § PluginContext API`
 - **Dashboard slot names** — the shell only renders slots from its catalogue
-  (`docs/extending-the-dashboard.md:590-600`). `registerSlot()` with an unknown
-  name is a silent no-op (widget loads, never mounts). NEVER propose a slot name
-  without verifying it exists in the catalogue. See `ONBOARDING.md § Slot widgets`
-  for the verified list (`sessions:top`, `cron:top`, `header-right`,
-  `analytics:bottom`). If no shell slot fits, render inside `TelemetryPage` instead.
+  (`website/docs/user-guide/features/extending-the-dashboard.md`
+  § *Slot catalogue*). `registerSlot()` with an unknown name is a silent no-op
+  (widget loads, never mounts). NEVER propose a slot name without verifying it
+  against that section — the catalogue grows, and any list in this repo is a
+  dated snapshot. `ONBOARDING.md § Dashboard Plugin Surface` carries the last
+  verified copy plus the four slots we actually register. If no slot fits,
+  render inside `TelemetryPage` instead.
 
 ### How to verify
 
@@ -49,7 +51,7 @@ https://raw.githubusercontent.com/NousResearch/hermes-agent/main/<path>
 | `model_tools.py` | post_tool_call kwargs |
 | `cron/scheduler.py` | cron session_id format |
 | `agent/moa_loop.py` · `agent/auxiliary_client.py` · `hermes_cli/moa_config.py` | MoA virtual provider: reference/aggregator call mechanics (auxiliary `call_llm`, no hooks fire), preset config shape. See `ONBOARDING.md § Mixture of Agents (MoA)` |
-| `docs/extending-the-dashboard.md` | Dashboard slot catalogue (valid `registerSlot` names) |
+| `website/docs/user-guide/features/extending-the-dashboard.md` | Plugin SDK surface + dashboard slot catalogue (valid `registerSlot` names) |
 
 ---
 
