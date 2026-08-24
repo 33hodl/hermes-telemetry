@@ -27,6 +27,7 @@
 16. [PluginContext API](#plugincontext-api)
 17. [Valid Hooks Reference](#valid-hooks-reference)
 18. [Dashboard Plugin Surface](#dashboard-plugin-surface)
+19. [Hermes Session Storage (transcripts and artifacts)](#hermes-session-storage-transcripts-and-artifacts)
 
 ---
 
@@ -965,9 +966,10 @@ paid calls on the same pair are no-ops. The dashboard endpoint
 `GET /tier-transitions?window_hours=72` reads from this table (read-only,
 `PRAGMA query_only=ON`). The widget (`TierTransitionsWidget`) is rendered
 **inside `TelemetryPage`**, NOT via `registerSlot`: no shell slot in the
-verified catalogue (`sessions:top`, `cron:top`, `header-right`,
-`analytics:bottom`) fits a "tier change" surface, and registering an
-unknown slot name is a silent no-op. The widget hides itself when no
+catalogue known at the time fit a "tier change" surface, and registering an
+unknown slot name is a silent no-op. (The catalogue has since grown —
+`header-banner` may now fit. See
+[Dashboard Plugin Surface](#dashboard-plugin-surface) § Slot catalogue.) The widget hides itself when no
 transitions fall in the window, so the page is unchanged during the happy
 path.
 
@@ -2027,16 +2029,48 @@ Verified fields:
   (`web_server.py:11382-11391`).
 - `slots` is **documentation only**. The real binding happens in the JS
   bundle via `window.__HERMES_PLUGINS__.registerSlot(...)`
-  (extending-the-dashboard.md, line 696).
+  (extending-the-dashboard.md § *Augmenting built-in pages*).
 - `api` is validated by `_safe_plugin_api_relpath` (`web_server.py:11296-11330`);
   absolute paths or `..` traversal cause backend mount to be skipped (the
   static assets still load). This is fix for GHSA-5qr3-c538-wm9j.
 
-### Slot widgets
+### Slot catalogue (verified 2026-08-24)
 
-Page-scoped slots render only on the named built-in page. The slot
-catalogue (`extending-the-dashboard.md:590-600`) was verified against
-source; the four slots we register are:
+The shell renders `<PluginSlot name="..." />` only for the names below. Source:
+`website/docs/user-guide/features/extending-the-dashboard.md` § *Slot catalogue*
+(upstream lines 577-604 at time of writing — prefer the section heading over the
+line numbers, which move).
+
+**Shell-wide** — render anywhere in the app chrome:
+
+| Slot | Location |
+|------|----------|
+| `backdrop` | Inside the `<Backdrop />` layer stack, above the noise layer. |
+| `header-left` | Before the Hermes brand in the top bar. |
+| `header-right` | Before the theme/language switchers in the top bar. |
+| `header-banner` | Full-width strip below the nav. |
+| `sidebar` | Cockpit sidebar rail — **only rendered when `layoutVariant === "cockpit"`**. |
+| `pre-main` | Above the route outlet (inside `<main>`). |
+| `post-main` | Below the route outlet (inside `<main>`). |
+| `footer-left` / `footer-right` | Footer cell content (replaces the default). |
+| `overlay` | Fixed-position layer above everything else. |
+
+**Page-scoped** — `:top` and `:bottom` on each built-in page:
+
+`sessions:*` · `analytics:*` · `logs:*` · `cron:*` · `skills:*` · `config:*` ·
+`env:*` · `docs:*` · `chat:*`
+
+`logs:top` sits above the filter toolbar and `logs:bottom` below the log viewer;
+`docs:top` sits above the iframe; `chat:*` is only active when embedded chat is
+enabled. Everything else is the plain top/bottom of the page content area.
+
+> **This list grew.** Until 2026-08-24 this section recorded four slots and
+> called them "the entire verified catalogue". That was true when written and
+> silently stopped being true. Treat any slot list in this repo as a snapshot,
+> re-verify against the upstream section before designing around it, and update
+> the date above when you do.
+
+### Slot widgets we register
 
 | Slot | Widget |
 |------|--------|
@@ -2045,24 +2079,35 @@ source; the four slots we register are:
 | `header-right` | 24h spend + budget level (variant=destructive on hard breach). |
 | `analytics:bottom` | Daily cost line chart (vendored Chart.js served locally; CDN fallback only). |
 
+Four of the twenty-eight available slots. `manifest.json` lists the same four,
+but that field is documentation only — the binding happens in `dist/index.js`
+via `registerSlot()`.
+
 ### Slot names are NOT free-form — verify before adding new ones
 
-The shell only renders slots whose names appear in its catalogue
-(`extending-the-dashboard.md:590-600`). Registering an unknown slot via
-`registerSlot()` is a silent no-op: the widget loads but nothing on the
-page ever mounts it. **Do not invent slot names** — `alerts:top`,
-`warnings:top`, etc. do not exist. The four above are the entire
-verified catalogue as of this writing.
+The shell only renders slots whose names appear in the catalogue above.
+Registering an unknown slot via `registerSlot()` is a silent no-op: the widget
+loads but nothing on the page ever mounts it. **Do not invent slot names** —
+`alerts:top` and `warnings:top`, for instance, do not exist.
 
-If you need a new visible surface and none of the four fit, render the
-widget **inside `TelemetryPage`** (the plugin's own tab) instead — that
-page is fully under our control. The free→paid transitions widget is
-rendered this way (see `dist/index.js`, `TelemetryPage`), not via
-`registerSlot`, precisely because no shell slot fit.
+If you need a visible surface and no slot fits, render the widget **inside
+`TelemetryPage`** (the plugin's own tab) — that page is fully under our control.
 
-When new slots are added upstream, re-verify the catalogue at
-`https://raw.githubusercontent.com/NousResearch/hermes-agent/main/docs/extending-the-dashboard.md`
-and update this table.
+> **Revisit candidate.** The free→paid transitions widget renders inside
+> `TelemetryPage` on the recorded rationale that "no shell slot fits a tier
+> change surface". `header-banner` — a full-width strip below the nav — now
+> exists and is plausibly that surface. The decision predates it; re-evaluate
+> before assuming it still holds.
+
+Re-verify the catalogue against upstream before adding a slot:
+
+```
+https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/docs/user-guide/features/extending-the-dashboard.md
+```
+
+Note the path: the doc lives under `website/docs/user-guide/features/`, not
+`docs/`. A wrong path here 404s silently, which is exactly how the old
+four-slot list survived long past its expiry.
 
 The SDK does not currently expose an `useActiveSession` hook, so
 `sessions:top` shows the most recent run instead of the per-row session.
@@ -2087,3 +2132,97 @@ Both surfaces are upgraded with a single `git pull` in
 `~/.hermes/plugins/hermes-telemetry`. The manifest version is pinned to
 `__version__` by `test_plugin_version_matches_package`, so a release tag
 implicitly ships both surfaces in lockstep.
+
+---
+
+## Hermes Session Storage (transcripts and artifacts)
+
+Telemetry's own database records *what a session cost*, never *what it produced*:
+`tool_calls` stores `tool_name, ok, latency_ms` and nothing else — no arguments, no
+results, no paths. Any feature that wants to surface a session's output must read
+Hermes' own state. This section documents that state so nobody re-derives it wrong.
+
+Verified 2026-08-21 against `NousResearch/hermes-agent@main` and a real `~/.hermes`.
+
+### `sessions/` is a flat directory — there is no per-session folder
+
+```
+HERMES_HOME/sessions/
+├── sessions.json                  ← session index
+└── request_dump_*.json            ← per-request payload dumps
+```
+
+That is the whole layout. A real home was inspected: 34 files, **0 subdirectories**.
+
+- `gateway/config.py` defines `sessions_dir = get_hermes_home() / "sessions"`.
+- `gateway/session.py` documents the legacy transcript path as
+  `sessions_dir / f"{session_id}.json"` — a **file**, and it also explains why
+  `session_id` passes a strict guard: it is interpolated straight into a filename.
+
+**Never assume `sessions/<session_id>/` exists.** Code written against that shape
+returns empty for every session and looks like "no data" rather than a bug. This
+already cost one implementation (PR #80, reverted).
+
+`request_dump_*.json` holds full request payloads including system prompts. It must
+never be served by either dashboard surface.
+
+### Transcripts live in `state.db`
+
+`HERMES_HOME/state.db` (SQLite, WAL) is the transcript store:
+
+| Table | Shape |
+|-------|-------|
+| `sessions` | `id` (PK, the session id), `source`, `model`, `system_prompt`, `parent_session_id`, `started_at`, `ended_at`, token counters |
+| `messages` | `session_id` FK, `role`, `content`, `tool_calls`, `tool_name`, `timestamp`, `token_count`, `active`, `compacted` — plus `messages_fts` full-text mirrors |
+
+`idx_messages_session` covers `(session_id, timestamp)`, so per-session reads are cheap
+even on a large DB (135 MB observed). Upstream `tests/gateway/test_load_transcript_db_only.py`
+confirms the DB is the source of truth, not the legacy JSON file.
+
+**Per profile:** each profile home carries its own `state.db` at
+`HERMES_HOME/profiles/<name>/state.db` (verified on disk). Resolve which one to open
+from `runs.profile` (schema v12): `NULL` → the root `state.db`, otherwise the profile's.
+Telemetry consolidates rows into the root DB, so a run in the root telemetry DB may
+still have its transcript in a profile home.
+
+### Joining telemetry to Hermes sessions
+
+`runs.session_id` matches `state.db`'s `sessions.id` verbatim — same format for both
+interactive (`20260704_150355_99b11196`) and cron (`cron_<job>_<ts>`) runs.
+
+The join is **lossy by design**: measured on a real pair of databases, 104 of 191
+telemetry runs still existed in `state.db` (54%). Telemetry is append-only and Hermes
+prunes sessions, so older runs have no transcript and never will. This is the same
+asymmetry `serve.py::_active_hermes_session_ids()` already handles when it soft-hides
+deleted sessions.
+
+### Artifacts are transcript references, not stored files
+
+Hermes has **no artifact store**. Its own desktop Artifacts tab
+(`apps/desktop/src/app/artifacts/artifact-utils.ts`) derives artifacts by parsing
+session messages for:
+
+- `MEDIA:` tags and `Screenshot path:` lines
+- markdown image and link references
+- tool-result keys — `output_path`, `saved_to`, `screenshot_path`, `files_created`,
+  `generated_file`, `artifact_*`, `local_path`, ...
+- absolute, relative and Windows path patterns in message text
+
+Every hit is a **reference** to a file wherever the tool happened to write it — usually
+the session's working directory, sometimes a cache, sometimes already deleted. Any
+telemetry surface that lists artifacts inherits that: paths are untrusted, may not
+exist, and live outside any directory this plugin controls. Serving their contents is a
+separate security problem from listing them (allowlisted roots, symlinks resolved before
+the decision, size caps, a real bytes endpoint).
+
+### Rules for reading `state.db`
+
+`state.db` is Hermes' private schema, not a plugin API. It carries no compatibility
+promise and can change on any upgrade.
+
+- Open read-only (`file:...?mode=ro`); never create it, never write, never migrate it.
+- Access columns defensively and degrade to an empty result on any schema drift,
+  missing file, or lock — a missing transcript is not an error state for telemetry.
+- Keep the connection short-lived: a live Hermes is writing to the same WAL.
+- Cover schema drift in tests explicitly, the same way the migration tests cover
+  upgrade paths.
