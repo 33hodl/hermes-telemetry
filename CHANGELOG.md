@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — pre_tool_call budget-gate timeouts from hot-path SQLite aggregates
+
+`pre_tool_call` budget enforcement fires on **every** tool call. With the 5s
+verdict TTL the cache was cold for nearly every call in a fast agent loop, so
+each call ran up to ~8 sequential aggregate queries (`spend_by_scope` +
+`estimated_price_share`, per scope x window). Under cross-process WAL
+contention (gateway + `serve` + webui share `telemetry.db`), each query can
+busy-wait up to the configured `busy_timeout`; stacked waits exceeded the
+core's 30s bounded-hook deadline, and the core then fails closed on every
+tool call while the abandoned hook thread drains ("pre_tool_call plugin
+callback timed out or is still running"; observed 2026-09-01 and 2026-09-04,
+~5-minute tool outages).
+
+Raised `_VERDICT_TTL_S` 5s -> 60s: hot-path aggregate queries drop ~12x, and a
+<=60s delay before a budget breach blocks is immaterial for daily/monthly
+limits.
+
 ### Changed — Core-sourced pricing snapshots are now the primary cost source
 
 - `estimate_cost()` now prefers the tariff Hermes core itself resolved for a

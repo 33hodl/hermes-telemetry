@@ -107,7 +107,18 @@ _config_lock = threading.Lock()
 # Short-TTL verdict cache so the pre_tool_call gate (which fires on EVERY tool
 # call) does not re-query SQLite within a single assistant turn. Spend only
 # changes when a new llm call is recorded, so a few seconds is safe.
-_VERDICT_TTL_S = 5.0
+#
+# 2026-09-04: raised 5s -> 60s after repeated "pre_tool_call plugin callback
+# timed out or is still running" incidents. With a 5s TTL the cache is cold for
+# nearly every tool call in a fast agent loop, so each call runs up to ~8
+# sequential aggregate queries (spend_by_scope + estimated_price_share per
+# scope x window); under cross-process WAL contention (gateway + serve + webui
+# share telemetry.db) each can busy-wait up to the busy_timeout, and the
+# stacked waits can exceed the core's 30s bounded-hook deadline -> the core
+# then fails closed on every tool while the abandoned hook thread drains.
+# 60s TTL cuts hot-path aggregate queries ~12x; a <=60s delay before a budget
+# breach blocks is immaterial for daily/monthly limits.
+_VERDICT_TTL_S = 60.0
 _verdict_cache: dict[tuple, tuple] = {}
 _verdict_lock = threading.Lock()
 
