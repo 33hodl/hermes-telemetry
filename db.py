@@ -67,9 +67,17 @@ def _get_conn() -> sqlite3.Connection:
         # busy_timeout MUST be set before journal_mode=WAL: switching a fresh,
         # contested DB to WAL needs a brief lock, and with the default timeout
         # of 0 a concurrent switch fails immediately with "database is locked".
-        # 30s gives enough headroom for CI environments with slow or
-        # network-backed filesystems where concurrent writes contend.
-        conn.execute("PRAGMA busy_timeout=30000")
+        # Deliberately small (1s): Hermes wraps the pre_tool_call hook with a
+        # 30s fail-CLOSED timeout. If this plugin's DB work blocks past that,
+        # the CORE blocks every tool call ("pre_tool_call plugin callback
+        # timed out or is still running" — observed 2026-08-28, 2026-09-04 and
+        # again 2026-09-13). A cold verdict cache can stack up to ~9 sequential
+        # queries (get_run + spends per scope x window); at 5s each the stacked
+        # worst case exceeds the core's 30s bound, which is why 5s did not stop
+        # the 2026-09-13 recurrences. At 1s the stacked worst case stays ~9s,
+        # and a SQLITE_BUSY raise is caught by the hook's try/except and fails
+        # open (tool proceeds) instead of wedging the whole agent.
+        conn.execute("PRAGMA busy_timeout=1000")
         # Keep WAL initialization in the same critical section as schema setup.
         # `PRAGMA journal_mode=WAL` takes a database-level lock and can race with
         # concurrent first connections before the per-process schema lock otherwise.

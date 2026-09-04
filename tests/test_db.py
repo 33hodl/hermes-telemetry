@@ -2027,3 +2027,12 @@ def test_count_distinct_llm_models_ignores_empty():
     db.record_llm_call("s4", _BF_NOW, "", "nous", 1, 1, 0.0, 1)  # empty — ignored
 
     assert db.count_distinct_llm_models() == 2
+
+
+def test_conn_busy_timeout_bounded_for_hot_path_hooks():
+    """busy_timeout must stay far below the core's 30s fail-closed hook bound:
+    the pre_tool_call budget gate can stack several sequential queries on the
+    hot path, and stacked busy-waits blew past the 30s bound at 5s (2026-09-13).
+    """
+    conn = db._get_conn()
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 1000
