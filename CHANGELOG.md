@@ -19,6 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for auditing `pricing.yaml` itself but are no longer required to keep costs
   accurate. See `ONBOARDING.md § Pricing Engine → Lookup priority chain`.
 
+### Fixed — `pre_tool_call` hot path: fail-open fast path + throttled hook errors
+
+`pre_tool_call` is fail-CLOSED in Hermes (a callback timeout blocks every tool
+call until the stuck thread drains) and the telemetry budget gate runs on
+**every** tool call. The gate kept wedging even with the bounded `busy_timeout`
+(#97) and the 60s verdict cache (#98): a cold cache stacks several aggregate
+queries whose busy-waits can exceed the core's 30s bounded-hook deadline, and a
+failing hook used to log (and lock) once per tool call. Two changes:
+
+- **No budgets configured ⇒ no DB work at all.** With an empty `budgets` map
+  the gate can never block, so the hook now returns before touching
+  `telemetry.db` (`load_config()` is a cached in-memory read). Installs with
+  budgets configured keep the exact previous behavior.
+- **Throttled hot-path error logging.** `pre_tool_call` / `post_tool_call` /
+  `pre_llm_call` failures now log at most once per 60s per callback, with a
+  suppressed-occurrence count on the next emit, so a contention failure cannot
+  amplify itself once per tool call.
+
+Complements #97 + #98: together, the worst-case stacked waits on the hot path
+stay well under the core's 30s bounded-hook deadline, and budget-less installs
+no longer touch SQLite on the hot path at all. (Does not address the separate
+write-path durability work tracked in #99.)
+
 ## [0.8.0] - 2026-07-09
 
 ### Fixed — `/stats models` mislabeled known-free $0 rows as "no price entry"

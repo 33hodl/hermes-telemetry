@@ -160,6 +160,42 @@ def _is_tool_ok(result: Any) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Throttled error logging for the hot-path hooks (2026-09-13)
+# ---------------------------------------------------------------------------
+# pre_tool_call / post_tool_call / pre_llm_call fire on every tool call; under
+# cross-process SQLite contention (gateway + serve share telemetry.db) the same
+# failure can repeat on every call. Logging each repeat floods the log file and
+# adds lock pressure of its own — emit at most once per prefix per interval,
+# reporting how many occurrences were suppressed on the next emit.
+_HOOK_ERROR_LOG_INTERVAL_S = 60.0
+_hook_error_log_state: dict[str, tuple[float, int]] = {}
+_hook_error_log_lock = threading.Lock()
+
+
+def _throttled_error(prefix: str, exc: BaseException) -> None:
+    """Log a hot-path hook failure at most once per interval (per prefix)."""
+    now = time.monotonic()
+    with _hook_error_log_lock:
+        entry = _hook_error_log_state.get(prefix)
+        if entry is not None and (now - entry[0]) < _HOOK_ERROR_LOG_INTERVAL_S:
+            _hook_error_log_state[prefix] = (entry[0], entry[1] + 1)
+            return
+        suppressed = entry[1] if entry is not None else 0
+        _hook_error_log_state[prefix] = (now, 0)
+    log = logging.getLogger("hermes_telemetry")
+    if suppressed:
+        log.error(
+            "%s: %s (+%d occurrences suppressed in the last %.0fs)",
+            prefix,
+            exc,
+            suppressed,
+            _HOOK_ERROR_LOG_INTERVAL_S,
+        )
+    else:
+        log.error("%s: %s", prefix, exc)
+
+
 def register(ctx) -> None:  # noqa: ANN001
     _setup_log_file()
     tele_log = logging.getLogger("hermes_telemetry")
@@ -547,7 +583,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 latency_ms=duration_ms,
             )
         except Exception as exc:
-            tele_log.error("post_tool_call hook failed: %s", exc)
+            _throttled_error("post_tool_call hook failed", exc)
 
     ctx.register_hook("post_tool_call", post_tool_call)
 
@@ -744,7 +780,7 @@ def register(ctx) -> None:  # noqa: ANN001
             if ctx_parts:
                 return {"context": "\n\n".join(ctx_parts)}
         except Exception as exc:
-            tele_log.error("pre_llm_call (budget) hook failed: %s", exc)
+            _throttled_error("pre_llm_call (budget) hook failed", exc)
         return None
 
     ctx.register_hook("pre_llm_call", pre_llm_call)
@@ -760,6 +796,14 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     def pre_tool_call(session_id: str = "", **_kw):
         try:
+            # Fast path (2026-09-13): with no budgets configured this hook can
+            # never block anything, so skip ALL DB work. pre_tool_call is
+            # fail-CLOSED in Hermes — a hook timeout blocks every tool call — so
+            # keeping the hot path DB-free whenever enforcement is off is the
+            # single best protection against the "pre_tool_call plugin callback
+            # timed out or is still running" incident class.
+            if not budget.load_config().get("budgets"):
+                return None
             run = db.get_run(session_id)
             if not run:
                 return None
@@ -770,7 +814,7 @@ def register(ctx) -> None:  # noqa: ANN001
                 tele_log.warning("budget hard-block for session=%s: %s", session_id, msg)
                 return {"action": "block", "message": msg}
         except Exception as exc:
-            tele_log.error("pre_tool_call (budget) hook failed: %s", exc)
+            _throttled_error("pre_tool_call (budget) hook failed", exc)
         return None
 
     ctx.register_hook("pre_tool_call", pre_tool_call)
