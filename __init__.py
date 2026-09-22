@@ -161,28 +161,40 @@ def _is_tool_ok(result: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Throttled error logging for the hot-path hooks (2026-09-13)
+# Throttled error logging for the hot-path hooks
 # ---------------------------------------------------------------------------
-# pre_tool_call / post_tool_call / pre_llm_call fire on every tool call; under
-# cross-process SQLite contention (gateway + serve share telemetry.db) the same
-# failure can repeat on every call. Logging each repeat floods the log file and
-# adds lock pressure of its own — emit at most once per prefix per interval,
-# reporting how many occurrences were suppressed on the next emit.
-_HOOK_ERROR_LOG_INTERVAL_S = 60.0
-_hook_error_log_state: dict[str, tuple[float, int]] = {}
+# pre_tool_call / post_tool_call / pre_llm_call fire on every tool call, and a
+# failing hook used to log (and lock) once per call, amplifying itself under
+# exactly the conditions where logging is most expensive. Emit at most once
+# per (prefix, exception class) per interval, reporting how many occurrences
+# were suppressed on the next emit.
+#
+# Deliberately NOT 60s: the Hermes core's own hook-timeout suppression window
+# (_HOOK_TIMEOUT_SUPPRESSION_SECONDS in hermes_cli/plugins_dispatch.py) is 60s;
+# equal windows would beat against each other and make the suppressed count
+# meaningless.
+_HOOK_ERROR_LOG_INTERVAL_S = 300.0
+_hook_error_log_state: dict[tuple[str, str], tuple[float, int]] = {}
 _hook_error_log_lock = threading.Lock()
 
 
 def _throttled_error(prefix: str, exc: BaseException) -> None:
-    """Log a hot-path hook failure at most once per interval (per prefix)."""
+    """Log a hot-path hook failure at most once per interval.
+
+    The state key is (prefix, exception class) so a *different* failure raised
+    inside the window is surfaced immediately instead of being swallowed by
+    the previous one's suppression.
+    """
     now = time.monotonic()
+    key = (prefix, type(exc).__name__)
     with _hook_error_log_lock:
-        entry = _hook_error_log_state.get(prefix)
+        entry = _hook_error_log_state.get(key)
         if entry is not None and (now - entry[0]) < _HOOK_ERROR_LOG_INTERVAL_S:
-            _hook_error_log_state[prefix] = (entry[0], entry[1] + 1)
+            _hook_error_log_state[key] = (entry[0], entry[1] + 1)
             return
         suppressed = entry[1] if entry is not None else 0
-        _hook_error_log_state[prefix] = (now, 0)
+        elapsed = (now - entry[0]) if entry is not None else 0.0
+        _hook_error_log_state[key] = (now, 0)
     log = logging.getLogger("hermes_telemetry")
     if suppressed:
         log.error(
@@ -190,7 +202,7 @@ def _throttled_error(prefix: str, exc: BaseException) -> None:
             prefix,
             exc,
             suppressed,
-            _HOOK_ERROR_LOG_INTERVAL_S,
+            elapsed,
         )
     else:
         log.error("%s: %s", prefix, exc)
@@ -796,14 +808,6 @@ def register(ctx) -> None:  # noqa: ANN001
     # ------------------------------------------------------------------
     def pre_tool_call(session_id: str = "", **_kw):
         try:
-            # Fast path (2026-09-13): with no budgets configured this hook can
-            # never block anything, so skip ALL DB work. pre_tool_call is
-            # fail-CLOSED in Hermes — a hook timeout blocks every tool call — so
-            # keeping the hot path DB-free whenever enforcement is off is the
-            # single best protection against the "pre_tool_call plugin callback
-            # timed out or is still running" incident class.
-            if not budget.load_config().get("budgets"):
-                return None
             run = db.get_run(session_id)
             if not run:
                 return None

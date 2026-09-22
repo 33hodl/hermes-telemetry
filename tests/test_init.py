@@ -342,7 +342,7 @@ def test_model_unavailable_alert_increments_occurrences(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# pre_tool_call hot-path protection (2026-09-13 incident class)
+# pre_tool_call hot-path budget gate
 # ---------------------------------------------------------------------------
 
 
@@ -388,29 +388,11 @@ def _reset_hook_throttle():
     _init_mod._hook_error_log_state.clear()
 
 
-def test_pre_tool_call_skips_db_when_no_budgets(monkeypatch):
-    """Fast path: with no budgets configured the hook must not touch the DB —
-    pre_tool_call is fail-CLOSED in Hermes, so a DB-free hot path is the
-    strongest protection against the callback-timeout incident class."""
+def test_pre_tool_call_evaluates_budget_gate(monkeypatch):
+    """The hook runs the DB-backed budget evaluation on every tool call."""
     import hermes_telemetry.budget as budget_mod
     import hermes_telemetry.db as db_mod
 
-    monkeypatch.setattr(budget_mod, "load_config", lambda: {"budgets": {}})
-    calls = []
-    monkeypatch.setattr(db_mod, "get_run", lambda session_id: calls.append(session_id) or {})
-    hooks = _registered_hooks(monkeypatch)
-    assert hooks["pre_tool_call"](session_id="sess-1") is None
-    assert calls == [], "pre_tool_call must not touch telemetry.db without budgets"
-
-
-def test_pre_tool_call_still_evaluates_when_budgets_configured(monkeypatch):
-    """With budgets configured the hook still runs the DB-backed evaluation."""
-    import hermes_telemetry.budget as budget_mod
-    import hermes_telemetry.db as db_mod
-
-    monkeypatch.setattr(
-        budget_mod, "load_config", lambda: {"budgets": {"global": {"daily_usd": 1.0}}}
-    )
     seen = []
     monkeypatch.setattr(
         db_mod,
@@ -469,8 +451,9 @@ def test_pre_tool_call_fails_open_and_throttles_error_logging(monkeypatch, tmp_p
     assert len(lines) == 1, f"expected 1 throttled error line, got {len(lines)}"
 
     # Age the throttle state past the interval -> next failure logs again and
-    # reports how many occurrences were suppressed meanwhile.
-    _init_mod._hook_error_log_state[prefix] = (
+    # reports how many occurrences were suppressed meanwhile. The state key is
+    # (prefix, exception class).
+    _init_mod._hook_error_log_state[(prefix, "OperationalError")] = (
         time.monotonic() - _init_mod._HOOK_ERROR_LOG_INTERVAL_S - 1.0,
         2,
     )
@@ -489,3 +472,43 @@ def test_throttled_error_is_per_prefix(caplog):
         _init_mod._throttled_error("hook B failed", RuntimeError("y"))
     recs = [r for r in caplog.records if r.name == "hermes_telemetry"]
     assert len(recs) == 2
+
+
+def test_throttled_error_is_per_exception_class(caplog):
+    """A different exception class inside the window is surfaced immediately —
+    the state key is (prefix, exception class), not the prefix alone."""
+    _reset_hook_throttle()
+    with caplog.at_level(logging.ERROR, logger="hermes_telemetry"):
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook A failed", sqlite3.OperationalError("locked"))
+    recs = [r for r in caplog.records if r.name == "hermes_telemetry"]
+    assert len(recs) == 2
+    assert "locked" in recs[-1].getMessage()
+
+
+def test_throttled_error_reports_elapsed_window(caplog):
+    """The suppressed-count message reports the actual elapsed window since the
+    last emit, not the configured interval."""
+    _reset_hook_throttle()
+    with caplog.at_level(logging.ERROR, logger="hermes_telemetry"):
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+        # Age the state well past the interval; the next emit must report the
+        # real elapsed time (~interval + 100s), not the configured interval.
+        _init_mod._hook_error_log_state[("hook A failed", "RuntimeError")] = (
+            time.monotonic() - _init_mod._HOOK_ERROR_LOG_INTERVAL_S - 100.0,
+            1,
+        )
+        _init_mod._throttled_error("hook A failed", RuntimeError("x"))
+    recs = [r for r in caplog.records if r.name == "hermes_telemetry"]
+    assert len(recs) == 2
+    msg = recs[-1].getMessage()
+    assert "suppressed" in msg
+    # Elapsed window is interval + ~100s -> the reported seconds exceed the
+    # configured interval (would be exactly 300 if it reported the constant).
+    import re
+
+    m = re.search(r"in the last (\d+)s", msg)
+    assert m is not None
+    assert float(m.group(1)) > _init_mod._HOOK_ERROR_LOG_INTERVAL_S
