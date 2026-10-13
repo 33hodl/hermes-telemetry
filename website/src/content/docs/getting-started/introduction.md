@@ -14,9 +14,11 @@ by blocking further tool calls once a hard limit is breached.
 - Captures tokens, cost, latency, and tool calls per session and cron job.
 - Persists everything to a local SQLite database.
 - Enforces spend budgets through Hermes hooks: a soft breach injects a one-time notice, a hard
-  breach blocks every further tool call and pauses the cron job. Hermes cannot abort a model call
-  already in flight, so that response still completes and is billed.
-- Exposes `/stats` and `/budget` slash commands.
+  breach blocks every further tool call, and a hard breach of a cron job's own budget also pauses
+  that job. Hermes cannot abort a model call already in flight, so that response still completes
+  and is billed.
+- Exposes `/stats`, `/budget`, and `/setup` slash commands, a standalone command-line tool, and two
+  web dashboards.
 
 ## What it measures
 
@@ -40,10 +42,9 @@ Cost is always an estimate computed from a locally maintained pricing table. No 
 API is called. When a provider returns no usage data, tokens are approximated and the row is
 flagged as estimated.
 
-## Documentation status
+## Where to go next
 
-This site is new and its content is still being migrated. Until that is done, the complete
-reference lives in the repository:
-
-- [README.md](https://github.com/nujovich/hermes-telemetry/blob/main/README.md): installation, configuration, commands, and architecture.
-- [ONBOARDING.md](https://github.com/nujovich/hermes-telemetry/blob/main/ONBOARDING.md): design decisions, hook behavior, and schema evolution.
+- [Installation](/hermes-telemetry/getting-started/installation/) and [Quick start](/hermes-telemetry/getting-started/quick-start/): get data flowing in a few minutes.
+- [Budgets](/hermes-telemetry/guides/budgets/): set limits and learn exactly what enforcement can stop.
+- [Slash commands](/hermes-telemetry/guides/slash-commands/), [Standalone CLI](/hermes-telemetry/guides/standalone-cli/), and [Dashboard](/hermes-telemetry/guides/dashboard/): the ways to read your data.
+- [Internals](/hermes-telemetry/internals/): design decisions, hook behavior, and schema evolution, for contributors.

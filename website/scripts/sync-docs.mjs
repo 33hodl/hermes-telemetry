@@ -1,6 +1,6 @@
 // Generates the Internals and Reference sections of the docs site from the
 // repo's markdown (ONBOARDING.md, CHANGELOG.md). Run by `predev` / `prebuild`.
-// The output directories are build artifacts: gitignored, wiped on every run.
+// The generated output (internals/, reference/changelog.md) is gitignored and rewritten on every run.
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -276,7 +276,10 @@ function main() {
 	const internals = buildInternalsPages(readFileSync(join(repoRoot, 'ONBOARDING.md'), 'utf8'));
 	const changelog = prepareChangelog(readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8'));
 
-	for (const dir of ['internals', 'reference']) rmSync(join(docs, dir), { recursive: true, force: true });
+	// `internals/` is fully generated, so it is wiped. `reference/` also holds hand-written pages
+	// (configuration, limitations, troubleshooting): only the generated changelog is replaced.
+	rmSync(join(docs, 'internals'), { recursive: true, force: true });
+	rmSync(join(docs, 'reference', 'changelog.md'), { force: true });
 	mkdirSync(join(docs, 'internals'), { recursive: true });
 	mkdirSync(join(docs, 'reference'), { recursive: true });
 	for (const p of internals) writeFileSync(join(docs, 'internals', p.file), p.content);

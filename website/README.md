@@ -11,8 +11,9 @@ npm run build    # fails on broken internal links (starlight-links-validator)
 
 Pages live in `src/content/docs/`; the sidebar is configured in `astro.config.mjs`.
 
-The **Internals** and **Reference** (Changelog) sections are generated at build time by
+The **Internals** section and the **Changelog** page are generated at build time by
 `scripts/sync-docs.mjs` (run by `predev` / `prebuild`) from `ONBOARDING.md` and `CHANGELOG.md`
-at the repo root. The output under `src/content/docs/internals/` and `src/content/docs/reference/`
-is gitignored and rewritten on every run: edit `ONBOARDING.md` / `CHANGELOG.md`, never the
-generated pages. `npm test` runs the generator's unit tests.
+at the repo root. The output (`src/content/docs/internals/` and
+`src/content/docs/reference/changelog.md`) is gitignored and rewritten on every run: edit
+`ONBOARDING.md` / `CHANGELOG.md`, never the generated pages. Every other page, including the
+rest of `reference/`, is hand-written. `npm test` runs the generator's unit tests.

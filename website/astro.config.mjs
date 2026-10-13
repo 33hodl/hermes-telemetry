@@ -20,12 +20,29 @@ export default defineConfig({
 			editLink: {
 				baseUrl: 'https://github.com/nujovich/hermes-telemetry/edit/main/website/',
 			},
-			// Planned groups, added as their pages land: Guides, Concepts. Internals and Reference
-			// are generated from ONBOARDING.md / CHANGELOG.md by scripts/sync-docs.mjs.
+			// Internals and the Changelog page are generated from ONBOARDING.md / CHANGELOG.md by
+			// scripts/sync-docs.mjs. Every other page is hand-written.
 			sidebar: [
 				{
 					label: 'Getting started',
-					items: [{ label: 'Introduction', slug: 'getting-started/introduction' }],
+					items: [
+						{ label: 'Introduction', slug: 'getting-started/introduction' },
+						{ label: 'Installation', slug: 'getting-started/installation' },
+						{ label: 'Quick start', slug: 'getting-started/quick-start' },
+						{ label: 'Setup wizard', slug: 'getting-started/setup-wizard' },
+					],
+				},
+				{
+					label: 'Guides',
+					items: [
+						{ label: 'Slash commands', slug: 'guides/slash-commands' },
+						{ label: 'Standalone CLI', slug: 'guides/standalone-cli' },
+						{ label: 'Dashboard', slug: 'guides/dashboard' },
+						{ label: 'Budgets', slug: 'guides/budgets' },
+						{ label: 'Pricing', slug: 'guides/pricing' },
+						{ label: 'Profiles and shared home', slug: 'guides/profiles' },
+						{ label: 'Provider probe', slug: 'guides/provider-probe' },
+					],
 				},
 				{
 					label: 'Internals',
@@ -34,7 +51,13 @@ export default defineConfig({
 				},
 				{
 					label: 'Reference',
-					items: [{ label: 'Changelog', slug: 'reference/changelog' }],
+					items: [
+						{ label: 'Configuration', slug: 'reference/configuration' },
+						{ label: 'Known limitations', slug: 'reference/known-limitations' },
+						{ label: 'Troubleshooting', slug: 'reference/troubleshooting' },
+						{ label: 'Proof of concept', slug: 'reference/proof-of-concept' },
+						{ label: 'Changelog', slug: 'reference/changelog' },
+					],
 				},
 			],
 		}),
