@@ -16,4 +16,4 @@ hero:
 
 hermes-telemetry is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 It captures real usage data from the runtime, persists it to a local SQLite database, and
-enforces budget limits: a hard breach blocks further tool calls and pauses the offending cron job.
+enforces budget limits: a hard breach blocks further tool calls, and a breach of a cron job's own budget pauses that job.
