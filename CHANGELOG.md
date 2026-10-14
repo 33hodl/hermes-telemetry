@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-14
+
 ### Fixed
 
 - **DeepSeek current ids priced at retired V3 rates (#121).** `deepseek-flash`,
@@ -21,11 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback, since their authoritative price is the core snapshot. Peak-hour (2x)
   pricing is tracked in #122.
 
-- Standalone dashboard: two error paths interpolated `err.message` into `innerHTML` unescaped (model-efficiency mount and the top-level load error); both now go through `escHtml`, matching the other error boxes.
+- Standalone dashboard: two error paths interpolated `err.message` into `innerHTML` unescaped (model-efficiency mount and the top-level load error); both now go through `escHtml`, matching the other error boxes (#124).
 
 ### Changed
 
-- Runtime dependencies are now upper-bounded below the next major (`watchdog>=3.0,<7`, `pyyaml>=6.0,<7`) so a future breaking release cannot reach users on a plain reinstall.
+- Runtime dependencies are now upper-bounded below the next major (`watchdog>=3.0,<7`, `pyyaml>=6.0,<7`) so a future breaking release cannot reach users on a plain reinstall (#124).
+
+### Documentation
+
+- **Documentation site (#125, #126, #131).** A Starlight site now hosts the docs:
+  hand-written guides (installation, quick start, setup wizard, slash commands,
+  standalone CLI, dashboard, budgets, pricing, profiles, provider probe), reference
+  pages (configuration, known limitations, troubleshooting), and Internals and
+  Changelog pages generated from `ONBOARDING.md` and `CHANGELOG.md`. The README is
+  slimmed to an entry point that links to each topic's page. Several stale README
+  claims were corrected along the way, notably that a hard budget breach blocks
+  further tool calls (the in-flight model call still completes and is billed).
 
 ## [0.9.0] - 2026-10-07
 
@@ -786,6 +799,7 @@ brings both surfaces up to date in lockstep. Verified against
 - MIT License
 - README with architecture, usage, screenshots
 
+[0.9.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nujovich/hermes-telemetry/compare/v0.7.0...v0.8.0
 [0.5.1]: https://github.com/nujovich/hermes-telemetry/compare/v0.5.0...v0.5.1
